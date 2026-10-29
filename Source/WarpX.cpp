@@ -780,6 +780,23 @@ WarpX::ReadParameters ()
 #endif
 
         pp_warpx.query_enum_case_insensitive("poisson_solver", poisson_solver_id);
+        if (poisson_solver_id == PoissonSolverAlgo::SparseLU) {
+#if !defined(WARPX_USE_SPARSE_LU)
+            WARPX_ABORT_WITH_MESSAGE("sparse_lu requires a CMake build with -DWarpX_SPARSE_LU=ON");
+#endif
+#if !defined(WARPX_DIM_XZ) && !defined(WARPX_DIM_3D)
+            WARPX_ABORT_WITH_MESSAGE("sparse_lu supports Cartesian 2D and 3D only");
+#endif
+            WARPX_ALWAYS_ASSERT_WITH_MESSAGE(
+                electrostatic_solver_id == ElectrostaticSolverAlgo::LabFrame,
+                "sparse_lu requires warpx.do_electrostatic = labframe");
+            for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+                WARPX_ALWAYS_ASSERT_WITH_MESSAGE(
+                    field_boundary_lo[d] == FieldBoundaryType::PEC &&
+                    field_boundary_hi[d] == FieldBoundaryType::PEC,
+                    "sparse_lu currently requires Dirichlet (PEC) domain boundaries");
+            }
+        }
 #ifndef WARPX_DIM_3D
         WARPX_ALWAYS_ASSERT_WITH_MESSAGE(
         poisson_solver_id!=PoissonSolverAlgo::IntegratedGreenFunction,

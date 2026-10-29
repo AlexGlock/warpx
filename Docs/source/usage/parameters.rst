@@ -426,6 +426,50 @@ Overall simulation parameters
         non-zero value is specified by the user via
         :pp:param:`warpx.self_fields_absolute_tolerance`).
 
+    * ``sparse_lu``: Direct sparse LU solve of the nodal finite-difference Poisson equation.
+        This experimental backend requires ``-DWarpX_SPARSE_LU=ON``, ``-DWarpX_PETSC=ON``
+        and ``-DWarpX_MPI=ON``, with a real-valued PETSc installation built with MUMPS
+        support. It uses ``KSPPREONLY``, ``PCLU`` and ``MATSOLVERMUMPS``. Eigen is not required.
+        Load the site's compatible compiler, MPI, PETSc and MUMPS modules before configuring.
+        WarpX automatically uses the ``PETSC_HOME`` environment variable exported by the
+        PETSc module. An explicit ``-DPETSC_DIR=/path/to/petsc`` overrides this default;
+        in-tree PETSc builds also require ``-DPETSC_ARCH=architecture``.
+        PETSc must already link the intended MUMPS installation; loading a standalone
+        ``mumps-32-openmp`` module does not add MUMPS support to an existing PETSc build.
+        CMake checks for MUMPS support and real scalar arithmetic, and the solver checks
+        that MUMPS LU is available at runtime.
+        In PICMI, select ``picmi.ElectrostaticSolver(grid=grid, method="sparse_lu")``.
+        It supports ``warpx.do_electrostatic = labframe`` on a single uniform Cartesian
+        2D or 3D level with staggered fields and Dirichlet (PEC) domain boundaries.
+        Fixed embedded conductors are supported using the same cut-edge stencil,
+        charge-density scaling and electric-field gradient as the multigrid EB solver.
+        Mesh refinement, periodic/Neumann domain boundaries, moving windows and
+        dynamic load balancing are not supported.
+
+        The reduced matrix excludes prescribed-potential nodes. Its factorization
+        is computed once and reused; boundary potentials enter the right-hand side
+        and may change without refactorization. The factors are rebuilt after restart.
+        Factorization and substitution run on MPI rank zero on the CPU, on ``PETSC_COMM_SELF``.
+        An OpenMP-enabled MUMPS and threaded BLAS installation can use ``OMP_NUM_THREADS``
+        threads on that rank; the backend does not change WarpX's OpenMP thread settings.
+        Reserve and bind the corresponding CPUs in the batch job. A single MPI rank
+        with multiple threads is a suitable starting configuration for small problems.
+        The remaining ranks wait during factorization/substitution; this is not a
+        distributed MUMPS factorization. Distributed
+        fields are gathered/scattered for each solve, including transfers for GPU runs.
+        Sparse LU fill-in can require substantial memory in 3D; the number of input
+        unknowns alone does not bound factor storage. This backend is intended for
+        small problems and should be benchmarked against multigrid for each geometry.
+        Multigrid iteration limits and convergence tolerances do not control this solver.
+
+        MUMPS controls may be supplied using PETSc's options database with the prefix
+        ``warpx_sparse_lu_``, for example through the environment variable
+        ``PETSC_OPTIONS="-warpx_sparse_lu_mat_mumps_icntl_14 40"``.
+        Do not override the KSP, PC or factorization types. For this rank-zero backend,
+        use ``OMP_NUM_THREADS`` for threading rather than PETSc's
+        ``-mat_mumps_use_omp_threads`` MPI-rank aggregation mode.
+        See the `PETSc MUMPS documentation <https://petsc.org/release/manualpages/Mat/MATSOLVERMUMPS/>`__.
+
     * ``fft``: Poisson's equation is solved using an Integrated Green Function method (which requires FFT calculations).
         See these references for more details :cite:t:`param-QiangPhysRevSTAB2006`, :cite:t:`param-QiangPhysRevSTAB2006err`.
         It only works in 3D and it requires the compilation flag ``-DWarpX_FFT=ON``.

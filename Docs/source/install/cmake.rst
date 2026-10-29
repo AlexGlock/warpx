@@ -427,6 +427,7 @@ CMake Option                  Default & Values                             Descr
 ``WarpX_DIMS``                **3**/2/1/RZ/RCYLINDER/RSPHERE               Simulation dimensionality. Use ``"1;2;3;RZ;RCYLINDER;RSPHERE"`` for all.
 ``WarpX_EB``                  **ON**/OFF                                   Embedded boundary support (not supported in RZ, RCYLINDER, and RSPHERE  yet)
 ``WarpX_PETSC``               ON/**OFF**                                   PETSc linear/nonlinear solvers via AMReX
+``WarpX_SPARSE_LU``           ON/**OFF**                                   Cached PETSc/MUMPS LU Poisson solver (requires WarpX_PETSC, WarpX_MPI and real PETSc with MUMPS)
 ``WarpX_IPO``                 ON/**OFF**                                   Compile WarpX with interprocedural optimization (aka LTO)
 ``WarpX_LIB``                 ON/**OFF**                                   Build WarpX as a library, e.g., for PICMI Python
 ``WarpX_MPI``                 **ON**/OFF                                   Multi-node support (message-passing)

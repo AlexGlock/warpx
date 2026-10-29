@@ -73,6 +73,7 @@ option(WarpX_APP           "Build the WarpX executable application"     ON)
 option(WarpX_ASCENT        "Ascent in situ diagnostics"                 OFF)
 option(WarpX_CATALYST      "Catalyst in situ diagnostics"               OFF)
 option(WarpX_EB            "Embedded boundary support"                  ON)
+option(WarpX_SPARSE_LU     "Cached PETSc/MUMPS electrostatic solver"     OFF)
 option(WarpX_PETSC         "PETSc linear/nonlinear solvers via AMReX"   OFF)
 option(WarpX_LIB           "Build WarpX as a library"                   OFF)
 option(WarpX_MPI           "Multi-node support (message-passing)"       ON)
@@ -229,6 +230,12 @@ try_compile(CXX_HAS_STD_FS_WITH_LINK "${WarpX_BINARY_DIR}/temp"
     LINK_LIBRARIES stdc++fs
 )
 
+# Use the prefix exported by cluster PETSc modules before AMReX discovers PETSc.
+# Keep an explicit PETSC_DIR override and do not cache the module's default.
+if(WarpX_PETSC AND NOT DEFINED PETSC_DIR AND NOT "$ENV{PETSC_HOME}" STREQUAL "")
+    set(PETSC_DIR "$ENV{PETSC_HOME}")
+endif()
+
 # AMReX
 #   builds AMReX from source (default) or finds an existing install
 set(WarpX_amrex_dim ${WarpX_DIMS})  # RZ is AMReX 2D
@@ -262,6 +269,11 @@ if(WarpX_FFT)
         find_package(lapackpp CONFIG REQUIRED)
         find_package(OpenMP REQUIRED)  # pulled by the two above
     endif()
+endif()
+
+# Direct electrostatic solver, using the PETSc dependency supplied by AMReX
+if(WarpX_SPARSE_LU)
+    include(${WarpX_SOURCE_DIR}/cmake/dependencies/SparseLU.cmake)
 endif()
 
 # Python

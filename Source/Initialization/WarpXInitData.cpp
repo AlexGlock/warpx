@@ -591,6 +591,9 @@ WarpX::PrintMainPICparameters ()
         else if(poisson_solver_id == PoissonSolverAlgo::Multigrid){
             amrex::Print() << "Poisson solver:       | multigrid" << "\n";
         }
+        else if (poisson_solver_id == PoissonSolverAlgo::SparseLU) {
+            amrex::Print() << "Poisson solver:       | cached PETSc/MUMPS LU (CPU)\n";
+        }
     }
 
     amrex::Print() << "-------------------------------------------------------------------------------\n";

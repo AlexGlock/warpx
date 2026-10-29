@@ -1,0 +1,19 @@
+# A grounded field with all conductor potentials set to the same nonzero value.
+# Exercise initial solve and cached solves through WarpX's normal timestep path.
+max_step = 3
+amr.max_level = 0
+amr.blocking_factor = 8
+amr.max_grid_size = 8
+warpx.const_dt = 1.e-9
+warpx.do_electrostatic = labframe
+warpx.poisson_solver = sparse_lu
+warpx.self_fields_verbosity = 1
+warpx.use_filter = 0
+boundary.potential_lo_x = 1.7
+boundary.potential_hi_x = 1.7
+boundary.potential_lo_z = 1.7
+boundary.potential_hi_z = 1.7
+warpx.eb_potential(x,y,z,t) = 1.7
+warpx.reduced_diags_names = field_max
+field_max.type = FieldMaximum
+field_max.intervals = 1

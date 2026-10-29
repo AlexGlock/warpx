@@ -70,6 +70,8 @@ AMREX_ENUM(PoissonSolverAlgo,
            Multigrid,
            IntegratedGreenFunction,
            fft = IntegratedGreenFunction,
+           SparseLU,
+           sparse_lu = SparseLU,
            Default = Multigrid);
 
 AMREX_ENUM(ParticlePusherAlgo,

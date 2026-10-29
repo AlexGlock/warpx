@@ -1,0 +1,10 @@
+FILE = inputs_common
+geometry.dims = 3
+amr.n_cell = 16 16 16
+geometry.prob_lo = 0.0 0.0 0.0
+geometry.prob_hi = 1.0 1.0 1.0
+boundary.field_lo = pec pec pec
+boundary.field_hi = pec pec pec
+boundary.potential_lo_y = 1.7
+boundary.potential_hi_y = 1.7
+warpx.eb_implicit_function = "0.19**2-(x-0.5)**2-(y-0.5)**2-(z-0.5)**2"

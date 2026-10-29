@@ -14,11 +14,23 @@
 #include "Python/callbacks.H"
 #include "WarpX.H"
 
+#include <limits>
+
 using namespace amrex;
 
 void LabFrameExplicitES::InitData() {
     auto & warpx = WarpX::GetInstance();
     m_poisson_boundary_handler->DefinePhiBCs(warpx.Geom(0));
+    if (WarpX::poisson_solver_id == PoissonSolverAlgo::SparseLU) {
+        WARPX_ALWAYS_ASSERT_WITH_MESSAGE(num_levels == 1,
+            "sparse_lu does not support mesh refinement");
+        WARPX_ALWAYS_ASSERT_WITH_MESSAGE(!WarpX::do_moving_window,
+            "sparse_lu requires a fixed geometry (no moving window)");
+        WARPX_ALWAYS_ASSERT_WITH_MESSAGE(!warpx.get_load_balance_intervals().isActivated(),
+            "sparse_lu currently requires load balancing to be disabled");
+        WARPX_ALWAYS_ASSERT_WITH_MESSAGE(WarpX::grid_type == GridType::Staggered,
+            "sparse_lu currently requires staggered fields");
+    }
 }
 
 void LabFrameExplicitES::ComputeSpaceChargeField (
@@ -68,7 +80,13 @@ void LabFrameExplicitES::ComputeSpaceChargeField (
         // Use the Python level solver (user specified)
         ExecutePythonCallback("poissonsolver");
 
-    } else {
+    }
+#if defined(WARPX_USE_SPARSE_LU) && (defined(WARPX_DIM_XZ) || defined(WARPX_DIM_3D))
+    else if (WarpX::poisson_solver_id == PoissonSolverAlgo::SparseLU) {
+        ComputePhiSparseLU(*rho_fp[0], *phi_fp[0], Efield_fp);
+    }
+#endif
+    else {
 
 #if defined(WARPX_DIM_1D_Z)
         // Use the tridiag solver with 1D
@@ -89,6 +107,54 @@ void LabFrameExplicitES::ComputeSpaceChargeField (
         if (IsPythonCallbackInstalled("poissonsolver")) { computeE(Efield_fp, phi_fp, beta); }
     }
 }
+
+#if defined(WARPX_USE_SPARSE_LU) && (defined(WARPX_DIM_XZ) || defined(WARPX_DIM_3D))
+void LabFrameExplicitES::ComputePhiSparseLU (
+    amrex::MultiFab const& rho, amrex::MultiFab& phi,
+    ablastr::fields::MultiLevelVectorField const& efield)
+{
+    auto& warpx = WarpX::GetInstance();
+    if (!m_sparse_lu) {
+        amrex::FabFactory<amrex::FArrayBox> const* factory = nullptr;
+#ifdef AMREX_USE_EB
+        if (EB::enabled()) { factory = &warpx.fieldEBFactory(0); }
+#endif
+        m_sparse_lu = std::make_unique<SparseLUPoissonSolver>(
+            warpx.Geom(0), warpx.boxArray(0), warpx.DistributionMap(0),
+            factory, self_fields_verbosity);
+        m_sparse_lu_rhs = std::make_unique<amrex::MultiFab>(
+            rho.boxArray(), rho.DistributionMap(), 1, 0);
+    }
+    auto& linop = m_sparse_lu->linop();
+#ifdef AMREX_USE_EB
+    if (EB::enabled()) {
+        auto const& bc = *m_poisson_boundary_handler;
+        if (bc.phi_EB_only_t) {
+            linop.setEBDirichlet(bc.potential_eb_t(warpx.gett_new(0)));
+        } else {
+            // The pinned AMReX callable setter does not clear a previously set
+            // scalar EB value. Select its spatial-potential storage explicitly.
+            linop.setEBDirichlet(std::numeric_limits<amrex::Real>::lowest());
+            linop.setEBDirichlet(bc.getPhiEB(warpx.gett_new(0)));
+        }
+    }
+#endif
+    amrex::MultiFab::Copy(*m_sparse_lu_rhs, rho, 0, 0, 1, 0);
+    m_sparse_lu_rhs->mult(-1._rt / PhysConst::epsilon_0);
+    m_sparse_lu->Solve(*m_sparse_lu_rhs, phi);
+    if (EB::enabled()) {
+        amrex::Array<amrex::MultiFab*, AMREX_SPACEDIM> grad{
+#if defined(WARPX_DIM_XZ)
+            efield[0][0], efield[0][2]
+#else
+            efield[0][0], efield[0][1], efield[0][2]
+#endif
+        };
+        linop.compGrad(0, grad, phi, amrex::MLLinOp::Location::FaceCenter);
+        for (auto* field : grad) { field->mult(-1._rt); }
+    }
+}
+#endif
 
 /* \brief Compute the potential by solving Poisson's equation with
           a 1D tridiagonal solve.

@@ -11,6 +11,10 @@
 
 #include "ElectrostaticSolver.H"
 
+#if defined(WARPX_USE_SPARSE_LU) && (defined(WARPX_DIM_XZ) || defined(WARPX_DIM_3D))
+#include "SparseLUPoissonSolver.H"
+#endif
+
 class LabFrameExplicitES final : public ElectrostaticSolver
 {
 public:
@@ -36,6 +40,15 @@ public:
         const ablastr::fields::MultiLevelScalarField& rho,
         const ablastr::fields::MultiLevelScalarField& phi
     );
+
+private:
+#if defined(WARPX_USE_SPARSE_LU) && (defined(WARPX_DIM_XZ) || defined(WARPX_DIM_3D))
+    std::unique_ptr<SparseLUPoissonSolver> m_sparse_lu;
+    std::unique_ptr<amrex::MultiFab> m_sparse_lu_rhs;
+    void ComputePhiSparseLU (
+        amrex::MultiFab const& rho, amrex::MultiFab& phi,
+        ablastr::fields::MultiLevelVectorField const& efield);
+#endif
 
 };
 

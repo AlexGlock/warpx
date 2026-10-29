@@ -19,6 +19,12 @@ set(WarpX_LIB @WarpX_LIB@)
 set(WarpX_LIB_FOUND ${WarpX_LIB})
 
 # dependencies
+set(WarpX_SPARSE_LU @WarpX_SPARSE_LU@)
+if(WarpX_SPARSE_LU)
+    find_dependency(PETSc)
+endif()
+set(WarpX_SPARSE_LU_FOUND ${WarpX_SPARSE_LU})
+
 set(WarpX_MPI @WarpX_MPI@)
 if(WarpX_MPI)
     find_dependency(MPI)

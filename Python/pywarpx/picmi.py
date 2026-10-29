@@ -2473,6 +2473,16 @@ class ElectrostaticSolver(picmistandard.PICMI_ElectrostaticSolver):
 
     Parameters
     ----------
+    method: string, optional
+        ``"Multigrid"``, ``"FFT"``, or ``"sparse_lu"``. The sparse LU backend
+        requires WarpX_SPARSE_LU=ON, WarpX_PETSC=ON, WarpX_MPI=ON and a real-valued
+        PETSc installation with MUMPS support. It caches a CPU LU factorization
+        for one fixed Cartesian 2D/3D level with staggered fields and Dirichlet
+        domain boundaries, including embedded conductors. Matrix factors and
+        triangular solves reside on MPI rank zero. An OpenMP-enabled MUMPS/BLAS
+        installation can use OMP_NUM_THREADS threads there. Iteration limits and
+        multigrid convergence tolerances do not apply to this direct solver.
+
     warpx_relativistic: bool, default=False
         Whether to use the relativistic solver or lab frame solver
 
@@ -2527,6 +2537,37 @@ class ElectrostaticSolver(picmistandard.PICMI_ElectrostaticSolver):
         The maximum allowable timestep when `warpx_dt_update_interval > 0`.
 
     """
+
+    def __init__(
+        self, grid, method=None, required_precision=None, maximum_iterations=None, **kw
+    ):
+        # PICMI validates methods against its own class-level list. Keep this
+        # WarpX extension local instead of modifying that global list.
+        super().__init__(
+            grid=grid,
+            method=None if method == "sparse_lu" else method,
+            required_precision=required_precision,
+            maximum_iterations=maximum_iterations,
+            **kw,
+        )
+        self.method = method
+        if method == "sparse_lu":
+            if self.relativistic or self.magnetostatic or self.effective_potential:
+                raise ValueError(
+                    "sparse_lu requires the lab-frame electrostatic solver"
+                )
+            if not isinstance(grid, (Cartesian2DGrid, Cartesian3DGrid)):
+                raise ValueError("sparse_lu requires a Cartesian 2D or 3D grid")
+            if grid.refined_regions:
+                raise ValueError("sparse_lu does not support mesh refinement")
+            if any(
+                bc != "dirichlet"
+                for bc in (
+                    *grid.lower_boundary_conditions,
+                    *grid.upper_boundary_conditions,
+                )
+            ):
+                raise ValueError("sparse_lu requires Dirichlet domain boundaries")
 
     def init(self, kw):
         self.relativistic = kw.pop("warpx_relativistic", False)

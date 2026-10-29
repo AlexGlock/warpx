@@ -3,5 +3,6 @@ CEXE_sources += LabFrameExplicitES.cpp
 CEXE_sources += RelativisticExplicitES.cpp
 CEXE_sources += EffectivePotentialES.cpp
 CEXE_sources += ElectrostaticSolver.cpp
+CEXE_sources += SparseLUPoissonSolver.cpp
 
 VPATH_LOCATIONS   += $(WARPX_HOME)/Source/FieldSolver/ElectrostaticSolvers
