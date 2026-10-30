@@ -177,11 +177,6 @@ void ScalarProbe::ComputeDiags (int step)
     CheckFields();
     auto const& warpx = WarpX::GetInstance();
     using warpx::fields::FieldType;
-    struct Sample {
-        int m_id;
-        amrex::IntVect m_cell;
-        amrex::GpuArray<amrex::Real, AMREX_SPACEDIM> m_fraction;
-    };
     using BoxSamples = std::vector<std::vector<Sample>>;
     std::vector<BoxSamples> samples(warpx.finestLevel()+1);
     for (int lev = 0; lev <= warpx.finestLevel(); ++lev) {
@@ -226,8 +221,9 @@ void ScalarProbe::ComputeDiags (int step)
             break;
         }
     }
-    // Match the default first-order interpolation used by FieldProbe.
-    constexpr int order = 1;
+    // Match the default first-order interpolation used by FieldProbe. Define
+    // the value outside the device lambda, as FieldProbe does for CUDA builds.
+    const int temp_interp_order = 1;
     for (int lev = 0; lev <= warpx.finestLevel(); ++lev) {
         auto const& phi = *warpx.m_fields.get(FieldType::phi_fp, lev);
         auto const& rho = *warpx.m_fields.get(FieldType::rho_fp, lev);
@@ -243,14 +239,16 @@ void ScalarProbe::ComputeDiags (int step)
             auto const phi_array = phi[box].const_array();
             auto const rho_array = rho[box].const_array();
             amrex::ParallelFor(static_cast<int>(points.size()),
-                [=] AMREX_GPU_DEVICE (int i) noexcept {
+                [=] AMREX_GPU_DEVICE (int i) {
                     result[2*i] = warpx::diagnostics::sampleNodalScalar(
-                        phi_array, q[i].m_cell, q[i].m_fraction, order);
+                        phi_array, q[i].m_cell, q[i].m_fraction, temp_interp_order);
                     result[2*i+1] = warpx::diagnostics::sampleNodalScalar(
-                        rho_array, q[i].m_cell, q[i].m_fraction, order);
+                        rho_array, q[i].m_cell, q[i].m_fraction, temp_interp_order);
                 });
             std::vector<amrex::Real> host(values.size());
-            amrex::Gpu::copy(amrex::Gpu::deviceToHost, values.begin(), values.end(), host.begin());
+            amrex::Gpu::copyAsync(
+                amrex::Gpu::deviceToHost, values.begin(), values.end(), host.begin());
+            amrex::Gpu::streamSynchronize();
             for (std::size_t i = 0; i < points.size(); ++i) {
                 m_data[2*points[i].m_id] = host[2*i];
                 m_data[2*points[i].m_id+1] = host[2*i+1];
