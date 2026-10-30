@@ -96,7 +96,11 @@ void PoissonBoundaryHandler::DefinePhiBCs (const amrex::Geometry& geom)
                     lobc[idim] = LinOpBCType::Dirichlet;
                     dirichlet_flag[idim*2] = true;
                 }
-                else if ( WarpX::field_boundary_lo[idim] == FieldBoundaryType::Neumann ) {
+                else if ( WarpX::field_boundary_lo[idim] == FieldBoundaryType::Neumann ||
+                    (WarpX::poisson_solver_id == PoissonSolverAlgo::SparseLU &&
+                     WarpX::field_boundary_lo[idim] == FieldBoundaryType::Open) ) {
+                    // Sparse LU replaces open-face equations with radial
+                    // decay; they are not prescribed-potential nodes.
                     lobc[idim] = LinOpBCType::Neumann;
                     dirichlet_flag[idim*2] = false;
                 }
@@ -111,7 +115,9 @@ void PoissonBoundaryHandler::DefinePhiBCs (const amrex::Geometry& geom)
                     hibc[idim] = LinOpBCType::Dirichlet;
                     dirichlet_flag[idim*2+1] = true;
                 }
-                else if ( WarpX::field_boundary_hi[idim] == FieldBoundaryType::Neumann ) {
+                else if ( WarpX::field_boundary_hi[idim] == FieldBoundaryType::Neumann ||
+                    (WarpX::poisson_solver_id == PoissonSolverAlgo::SparseLU &&
+                     WarpX::field_boundary_hi[idim] == FieldBoundaryType::Open) ) {
                     hibc[idim] = LinOpBCType::Neumann;
                     dirichlet_flag[idim*2+1] = false;
                 }
@@ -124,12 +130,12 @@ void PoissonBoundaryHandler::DefinePhiBCs (const amrex::Geometry& geom)
             }
 
             WARPX_ALWAYS_ASSERT_WITH_MESSAGE(
-                (WarpX::field_boundary_lo[idim] != FieldBoundaryType::Open &&
-                WarpX::field_boundary_hi[idim] != FieldBoundaryType::Open &&
+                ((WarpX::poisson_solver_id == PoissonSolverAlgo::SparseLU ||
+                 (WarpX::field_boundary_lo[idim] != FieldBoundaryType::Open &&
+                  WarpX::field_boundary_hi[idim] != FieldBoundaryType::Open)) &&
                 WarpX::field_boundary_lo[idim] != FieldBoundaryType::PML &&
                 WarpX::field_boundary_hi[idim] != FieldBoundaryType::PML) ,
-                "Open and PML field boundary conditions only work with "
-                "warpx.poisson_solver = fft."
+                "Open field boundaries require fft or sparse_lu; PML requires fft."
             );
         }
         else if (WarpX::poisson_solver_id == PoissonSolverAlgo::IntegratedGreenFunction){
@@ -185,5 +191,6 @@ void PoissonBoundaryHandler::BuildParsersEB ()
     else {
         potential_eb_parser = utils::parser::makeParser(potential_eb_str, {"t"});
         potential_eb_t = potential_eb_parser.compile<1>();
+        phi_EB_only_t = true;
     }
 }

@@ -11,7 +11,8 @@
 
 #include "ElectrostaticSolver.H"
 
-#if defined(WARPX_USE_SPARSE_LU) && (defined(WARPX_DIM_XZ) || defined(WARPX_DIM_3D))
+#if defined(WARPX_USE_SPARSE_LU) && \
+    (defined(WARPX_DIM_1D_Z) || defined(WARPX_DIM_XZ) || defined(WARPX_DIM_3D))
 #include "SparseLUPoissonSolver.H"
 #endif
 
@@ -42,7 +43,8 @@ public:
     );
 
 private:
-#if defined(WARPX_USE_SPARSE_LU) && (defined(WARPX_DIM_XZ) || defined(WARPX_DIM_3D))
+#if defined(WARPX_USE_SPARSE_LU) && \
+    (defined(WARPX_DIM_1D_Z) || defined(WARPX_DIM_XZ) || defined(WARPX_DIM_3D))
     std::unique_ptr<SparseLUPoissonSolver> m_sparse_lu;
     std::unique_ptr<amrex::MultiFab> m_sparse_lu_rhs;
     void ComputePhiSparseLU (

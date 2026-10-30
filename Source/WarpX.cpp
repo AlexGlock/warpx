@@ -784,18 +784,31 @@ WarpX::ReadParameters ()
 #if !defined(WARPX_USE_SPARSE_LU)
             WARPX_ABORT_WITH_MESSAGE("sparse_lu requires a CMake build with -DWarpX_SPARSE_LU=ON");
 #endif
-#if !defined(WARPX_DIM_XZ) && !defined(WARPX_DIM_3D)
-            WARPX_ABORT_WITH_MESSAGE("sparse_lu supports Cartesian 2D and 3D only");
+#if !defined(WARPX_DIM_1D_Z) && !defined(WARPX_DIM_XZ) && !defined(WARPX_DIM_3D)
+            WARPX_ABORT_WITH_MESSAGE("sparse_lu supports Cartesian 1D, 2D and 3D only");
 #endif
             WARPX_ALWAYS_ASSERT_WITH_MESSAGE(
                 electrostatic_solver_id == ElectrostaticSolverAlgo::LabFrame,
                 "sparse_lu requires warpx.do_electrostatic = labframe");
             for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+                auto const supported = [](FieldBoundaryType bc) {
+                    return bc == FieldBoundaryType::PEC ||
+                           bc == FieldBoundaryType::Periodic || bc == FieldBoundaryType::Open;
+                };
                 WARPX_ALWAYS_ASSERT_WITH_MESSAGE(
-                    field_boundary_lo[d] == FieldBoundaryType::PEC &&
-                    field_boundary_hi[d] == FieldBoundaryType::PEC,
-                    "sparse_lu currently requires Dirichlet (PEC) domain boundaries");
+                    supported(field_boundary_lo[d]) && supported(field_boundary_hi[d]),
+                    "sparse_lu supports PEC, periodic or open (radial decay) boundaries");
+                WARPX_ALWAYS_ASSERT_WITH_MESSAGE(
+                    (field_boundary_lo[d] == FieldBoundaryType::Periodic) ==
+                    (field_boundary_hi[d] == FieldBoundaryType::Periodic),
+                    "sparse_lu requires paired periodic boundaries in each dimension");
             }
+#if defined(WARPX_DIM_1D_Z)
+            WARPX_ALWAYS_ASSERT_WITH_MESSAGE(
+                field_boundary_lo[0] == FieldBoundaryType::PEC ||
+                field_boundary_hi[0] == FieldBoundaryType::PEC,
+                "sparse_lu in Cartesian 1D requires at least one PEC/Dirichlet face");
+#endif
         }
 #ifndef WARPX_DIM_3D
         WARPX_ALWAYS_ASSERT_WITH_MESSAGE(
@@ -809,8 +822,9 @@ WarpX::ReadParameters ()
 
         if(is_any_boundary_open){
             WARPX_ALWAYS_ASSERT_WITH_MESSAGE(
-                poisson_solver_id == PoissonSolverAlgo::IntegratedGreenFunction,
-                "Field open boundary conditions are only implemented for the FFT-based Poisson solver");
+                poisson_solver_id == PoissonSolverAlgo::IntegratedGreenFunction ||
+                poisson_solver_id == PoissonSolverAlgo::SparseLU,
+                "Field open boundary conditions require the FFT or sparse_lu Poisson solver");
         }
 
 

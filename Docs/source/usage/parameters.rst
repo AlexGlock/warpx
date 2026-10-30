@@ -440,15 +440,65 @@ Overall simulation parameters
         that MUMPS LU is available at runtime.
         In PICMI, select ``picmi.ElectrostaticSolver(grid=grid, method="sparse_lu")``.
         It supports ``warpx.do_electrostatic = labframe`` on a single uniform Cartesian
-        2D or 3D level with staggered fields and Dirichlet (PEC) domain boundaries.
-        Fixed embedded conductors are supported using the same cut-edge stencil,
-        charge-density scaling and electric-field gradient as the multigrid EB solver.
-        Mesh refinement, periodic/Neumann domain boundaries, moving windows and
+        1D, 2D or 3D level with staggered fields. Cartesian 1D supports two Dirichlet
+        (PEC) faces or one Dirichlet face and one open face. Cartesian 2D/3D supports
+        Dirichlet, periodic or open domain boundaries; Dirichlet boundaries can be
+        mixed with either periodic or open faces. Fixed embedded conductors are
+        supported in 2D/3D using the same cut-edge stencil, charge-density scaling
+        and electric-field gradient as the multigrid EB solver. WarpX does not
+        provide embedded-boundary geometry in Cartesian 1D.
+        Mesh refinement, Neumann domain boundaries, moving windows and
         dynamic load balancing are not supported.
+
+        Periodic boundaries must be paired on opposite faces. Periodic endpoint
+        nodes share one unknown, including when a direction spans multiple boxes
+        or MPI ranks. The problem must be constrained by fixed-potential domain
+        boundaries or embedded conductors. Fully periodic domains without embedded
+        conductors are rejected; the solver does not add an artificial gauge or
+        neutralizing background charge. Consequently, fully periodic Cartesian 1D
+        is unsupported because no 1D embedded conductor can anchor its free mode.
+
+        With ``sparse_lu``, ``open`` imposes radial far-field decay:
+        :math:`(\mathbf{x}-\mathbf{x}_0)\cdot\nabla\phi + \beta\phi = 0`.
+        For a domain with Dirichlet walls, the expansion center :math:`\mathbf{x}_0`
+        is the center of the first Dirichlet wall in coordinate order (low before
+        high), and :math:`\beta = D-1` in dimension :math:`D` (dipole decay).
+        This approximates localized sources above a grounded base plate; a single
+        grounded wall with all other faces open is supported. For an all-open 3D
+        box, the expansion center is the domain center and :math:`\beta=1`
+        (monopole decay toward zero potential at infinity).
+
+        In Cartesian 1D, exactly one open face is supported when the other face is
+        Dirichlet. The radial equation then reduces to zero normal derivative at the
+        open face. All-open 1D is rejected because the potential has a free mode and
+        a general nonzero net charge has no decaying one-dimensional far field.
+
+        All-open Cartesian 2D uses the logarithmic far field
+        :math:`\phi=A\log(R_\mathrm{ref}/r)`, with
+        :math:`\beta=1/\log(R_\mathrm{ref}/r)` and
+        :math:`r=|\mathbf{x}-\mathbf{x}_0|` measured from the domain center.
+        The reference radius :math:`R_\mathrm{ref}` defaults to three times the
+        domain diagonal; see :pp:param:`warpx.sparse_lu_open_reference_radius`.
+        This allows nonzero net charge without assuming zero potential at infinity
+        in 2D. The amplitude and charges induced on embedded conductors are
+        determined by the Poisson solve, not inferred from their prescribed voltages.
+
+        The radial derivative uses first-order one-sided differences toward the
+        expansion center in every coordinate, including tangential derivatives.
+        Each open face, edge or corner node carries one radial equation instead
+        of a charge-density equation. Dirichlet values take precedence at
+        intersections. The cell layer adjacent to every open face must be free of
+        embedded boundaries. Open and periodic boundaries cannot be combined.
+        This local far-field approximation assumes sources are sufficiently far
+        from the outer boundary; check sensitivity to domain size. It does not
+        reproduce the FFT solver's full free-space Green function.
 
         The reduced matrix excludes prescribed-potential nodes. Its factorization
         is computed once and reused; boundary potentials enter the right-hand side
         and may change without refactorization. The factors are rebuilt after restart.
+        After each solve, nodes covered by an embedded conductor are filled with its
+        prescribed potential for field diagnostics and Python access; they remain
+        excluded from the linear system.
         Factorization and substitution run on MPI rank zero on the CPU, on ``PETSC_COMM_SELF``.
         An OpenMP-enabled MUMPS and threaded BLAS installation can use ``OMP_NUM_THREADS``
         threads on that rank; the backend does not change WarpX's OpenMP thread settings.
@@ -493,6 +543,21 @@ Overall simulation parameters
             The auxiliary boxes are extended boxes in real and spectral space that are used to perform the necessary FFTs.
             The extended simulation box size in real space is :math:`2n_x-1, 2n_y-1, 2n_z-1` with the 3D solver, :math:`2n_x-1, 2n_y -1, n_z` with the 2D solver.
             The extended simulation box size in spectral space is :math:`n_x, 2n_y-1, 2n_z-1` with the 3D solver, :math:`n_x, 2n_y-1, n_z` with the 2D solver.
+
+.. pp:param:: warpx.sparse_lu_open_reference_radius
+
+    Floating point, optional (default: three times the domain diagonal).
+    For ``sparse_lu`` with all-open Cartesian 2D boundaries, sets the radius in
+    meters where the logarithmic far-field potential is zero. It must be finite
+    and greater than the domain half-diagonal. Native input value ``0`` selects
+    the default. In PICMI, use
+    ``picmi.ElectrostaticSolver(grid=grid, method="sparse_lu", warpx_sparse_lu_open_reference_radius=radius)``;
+    omitting the argument selects the same default. Explicit PICMI values must
+    be positive. The parameter is rejected for other boundary configurations
+    or dimensions. Changing this reference changes the potential reference and,
+    for conductors held at fixed voltage, their induced charges; it is a physical
+    modeling choice, not a convergence tolerance. The radius remains fixed
+    during a run so the LU factorization can be reused.
 
 .. pp:param:: warpx.self_fields_required_precision
     :type: ``float``
@@ -916,7 +981,8 @@ Domain Boundary Conditions
 
     * ``neumann``: For the electrostatic multigrid solver, a Neumann boundary condition (with gradient of the potential equal to 0) will be applied on the specified boundary.
 
-    * ``open``: For the electrostatic Poisson solver based on a Integrated Green Function method.
+    * ``open``: Free-space boundaries for the electrostatic Integrated Green Function
+      (``fft``) solver. With ``sparse_lu``, applies a radial far-field decay approximation; see :pp:param:`warpx.poisson_solver` for restrictions.
 
 .. pp:param:: boundary.potential_lo/hi_x/y/z
     :link_aliases:

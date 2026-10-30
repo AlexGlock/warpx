@@ -1,0 +1,22 @@
+# Exercise the cached PETSc/MUMPS path in Cartesian 1D. With zero charge and
+# equal nonzero Dirichlet potentials, phi is constant and E is zero.
+max_step = 3
+amr.max_level = 0
+amr.n_cell = 16
+amr.blocking_factor = 8
+amr.max_grid_size = 8
+geometry.dims = 1
+geometry.prob_lo = 0.0
+geometry.prob_hi = 1.0
+warpx.const_dt = 1.e-9
+warpx.do_electrostatic = labframe
+warpx.poisson_solver = sparse_lu
+warpx.self_fields_verbosity = 1
+warpx.use_filter = 0
+boundary.field_lo = pec
+boundary.field_hi = pec
+boundary.potential_lo_z = 1.7
+boundary.potential_hi_z = 1.7
+warpx.reduced_diags_names = field_max
+field_max.type = FieldMaximum
+field_max.intervals = 1

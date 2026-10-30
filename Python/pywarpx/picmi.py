@@ -2538,70 +2538,224 @@ class ElectrostaticSolver(picmistandard.PICMI_ElectrostaticSolver):
 
     """
 
-    def __init__(
-        self, grid, method=None, required_precision=None, maximum_iterations=None, **kw
-    ):
-        # PICMI validates methods against its own class-level list. Keep this
-        # WarpX extension local instead of modifying that global list.
-        super().__init__(
-            grid=grid,
-            method=None if method == "sparse_lu" else method,
-            required_precision=required_precision,
-            maximum_iterations=maximum_iterations,
-            **kw,
-        )
-        self.method = method
-        if method == "sparse_lu":
-            if self.relativistic or self.magnetostatic or self.effective_potential:
-                raise ValueError(
-                    "sparse_lu requires the lab-frame electrostatic solver"
-                )
-            if not isinstance(grid, (Cartesian2DGrid, Cartesian3DGrid)):
-                raise ValueError("sparse_lu requires a Cartesian 2D or 3D grid")
-            if grid.refined_regions:
-                raise ValueError("sparse_lu does not support mesh refinement")
-            if any(
-                bc != "dirichlet"
-                for bc in (
-                    *grid.lower_boundary_conditions,
-                    *grid.upper_boundary_conditions,
-                )
-            ):
-                raise ValueError("sparse_lu requires Dirichlet domain boundaries")
+    model_config = ConfigDict(
+        alias_generator=warpx_options(picmistandard.PICMI_ElectrostaticSolver)
+    )
 
-    def init(self, kw):
-        self.relativistic = kw.pop("warpx_relativistic", False)
-        self.absolute_tolerance = kw.pop("warpx_absolute_tolerance", None)
-        self.self_fields_verbosity = kw.pop("warpx_self_fields_verbosity", None)
-        self.magnetostatic = kw.pop("warpx_magnetostatic", False)
-        # Explicit magnetostatic solver parameters (override self_fields_* defaults)
-        self.magnetostatic_required_precision = kw.pop(
-            "warpx_magnetostatic_required_precision", None
+    method: Literal["FFT", "Multigrid", "sparse_lu"] | None = Field(
+        default=None,
+        description="Poisson solver method. 'sparse_lu' uses cached PETSc/MUMPS LU on a single uniform Cartesian 1D, 2D or 3D level. In 1D it supports Dirichlet boundaries, optionally with one open face. In 2D/3D it supports Dirichlet, periodic or open (radial far-field) boundaries. Open and periodic boundaries cannot be mixed.",
+    )
+    sparse_lu_open_reference_radius: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        description="For all-open Cartesian 2D sparse_lu: radius where the logarithmic far-field potential is zero, in meters. Defaults to three times the domain diagonal. Must exceed the domain half-diagonal. Unused in 3D or with Dirichlet domain faces.",
+    )
+    relativistic: bool = Field(
+        default=False,
+        description="Whether to use the relativistic solver or lab frame solver",
+    )
+    absolute_tolerance: float | None = Field(
+        default=None,
+        description="Absolute tolerance on the labframe electrostatic solver (default 0.)",
+    )
+    self_fields_verbosity: int | None = Field(
+        default=None,
+        description="Level of verbosity for the labframe electrostatic solver (default 2)",
+    )
+    # MLMG bottom solver parameters
+    self_fields_bottom_solver: (
+        Literal[
+            "default",
+            "smoother",
+            "bicgstab",
+            "cg",
+            "bicgcg",
+            "cgbicg",
+            "custom",
+            "algmg",
+            "hypre",
+            "petsc",
+        ]
+        | None
+    ) = Field(
+        default=None,
+        description="Bottom solver used by the MLMG electrostatic solver. 'hypre' and 'petsc' require an AMReX built with HYPRE / PETSc support. (default 'default')",
+    )
+    self_fields_bottom_verbosity: int | None = Field(
+        default=None,
+        description="Level of verbosity of the bottom solver of the electrostatic solvers (default 0)",
+    )
+    self_fields_bottom_max_iters: int | None = Field(
+        default=None,
+        description="Maximum number of bottom solver iterations (AMReX default: 200)",
+    )
+    self_fields_bottom_relative_tolerance: float | None = Field(
+        default=None,
+        description="Relative tolerance of the bottom solve (AMReX default: 1e-4)",
+    )
+    self_fields_bottom_absolute_tolerance: float | None = Field(
+        default=None,
+        description="Absolute tolerance of the bottom solve (AMReX default: unused)",
+    )
+    self_fields_max_coarsening_level: int | None = Field(
+        default=None,
+        description="Maximum number of MLMG coarsening levels (AMReX default: 30). Lowering this leaves a larger problem to the bottom solver.",
+    )
+    # MLMG coarse level distribution parameters
+    self_fields_agglomeration: bool | None = Field(
+        default=None,
+        description="Whether MLMG may gather the coarse multigrid levels onto a single box owned by a single MPI rank (AMReX default: True). Agglomeration avoids very small boxes at coarse levels, but it serializes those levels including the bottom solve, leaving the other ranks idle.",
+    )
+    self_fields_agglomeration_grid_size: int | None = Field(
+        default=None,
+        description="Box size below which MLMG agglomerates the coarse multigrid levels (AMReX defaults: 8 in 3D, 16 in 2D, 32 in 1D for CPU and 32 for GPU)",
+    )
+    self_fields_consolidation: bool | None = Field(
+        default=None,
+        description="Whether MLMG may redistribute the coarse multigrid levels onto a subset of the MPI ranks (AMReX default: True)",
+    )
+    self_fields_consolidation_grid_size: int | None = Field(
+        default=None,
+        description="Box size below which MLMG consolidates the coarse multigrid levels onto fewer MPI ranks (AMReX defaults: 8 in 3D, 16 in 2D, 32 in 1D for CPU and 32 for GPU)",
+    )
+    magnetostatic: bool = Field(
+        default=False,
+        description="Whether to also solve for self-consistent magnetic fields from currents.",
+    )
+    # Explicit magnetostatic solver parameters (override self_fields_* defaults)
+    magnetostatic_required_precision: float | None = Field(
+        default=None,
+        description="Relative precision for the magnetostatic solver. If not specified, defaults to the value of `required_precision`.",
+    )
+    magnetostatic_absolute_tolerance: float | None = Field(
+        default=None,
+        description="Absolute tolerance for the magnetostatic solver. If not specified, defaults to the value of `warpx_absolute_tolerance`.",
+    )
+    magnetostatic_max_iters: int | None = Field(
+        default=None,
+        description="Maximum iterations for the magnetostatic solver. If not specified, defaults to the value of `maximum_iterations`.",
+    )
+    magnetostatic_verbosity: int | None = Field(
+        default=None,
+        description="Verbosity level for the magnetostatic solver. If not specified, defaults to the value of `warpx_self_fields_verbosity`.",
+    )
+    effective_potential: bool = Field(
+        default=False,
+        description="Whether to use the effective potential Poisson solver (EP-PIC)",
+    )
+    effective_potential_factor: float | None = Field(
+        default=None,
+        description="If the effective potential Poisson solver is used, this sets the value of C_EP (the method is marginally stable at C_EP = 1) (default 4)",
+    )
+    effective_potential_time_filter_param: float | None = Field(
+        default=None,
+        description="Time filtering parameter used to filter sigma in the effective potential scheme. sigma is updated using: sigma^n = warpx_effective_potential_time_filter_param * sigma^n + (1 - warpx_effective_potential_time_filter_param) * sigma^n-1 (default 0.1)",
+    )
+    effective_potential_density_floor: float | None = Field(
+        default=None,
+        description="If given, this value will be used as the minimum density during the local calculation of sigma. (default 0)",
+    )
+    dt_update_interval: int | str | None = Field(
+        default=None,
+        description="How frequently the timestep is updated. Adaptive timestepping is disabled when this is <= 0. (default -1)",
+    )
+    cfl: float | None = Field(
+        default=None,
+        description="Fraction of the CFL condition for particle velocity vs grid size, used to set the timestep when `warpx_dt_update_interval > 0`.",
+    )
+    max_dt: float | None = Field(
+        default=None,
+        description="The maximum allowable timestep when `warpx_dt_update_interval > 0`.",
+    )
+
+    @model_validator(mode="after")
+    def _check_sparse_lu(self) -> Self:
+        if self.method != "sparse_lu":
+            if self.sparse_lu_open_reference_radius is not None:
+                raise ValueError(
+                    "sparse_lu_open_reference_radius requires method='sparse_lu'"
+                )
+            return self
+        if not isinstance(
+            self.grid, (Cartesian1DGrid, Cartesian2DGrid, Cartesian3DGrid)
+        ):
+            raise ValueError("sparse_lu supports Cartesian 1D, 2D and 3D grids only")
+        if self.grid.refined_regions:
+            raise ValueError("sparse_lu does not support mesh refinement")
+        if self.relativistic or self.magnetostatic or self.effective_potential:
+            raise ValueError("sparse_lu requires the labframe electrostatic solver")
+        if any(
+            bc not in ("dirichlet", "periodic", "open")
+            for bc in (
+                *self.grid.lower_boundary_conditions,
+                *self.grid.upper_boundary_conditions,
+            )
+        ):
+            raise ValueError(
+                "sparse_lu supports Dirichlet, periodic or open boundaries"
+            )
+        pairs = list(
+            zip(
+                self.grid.lower_boundary_conditions, self.grid.upper_boundary_conditions
+            )
         )
-        self.magnetostatic_absolute_tolerance = kw.pop(
-            "warpx_magnetostatic_absolute_tolerance", None
-        )
-        self.magnetostatic_max_iters = kw.pop("warpx_magnetostatic_max_iters", None)
-        self.magnetostatic_verbosity = kw.pop("warpx_magnetostatic_verbosity", None)
-        self.effective_potential = kw.pop("warpx_effective_potential", False)
-        self.effective_potential_factor = kw.pop(
-            "warpx_effective_potential_factor", None
-        )
-        self.effective_potential_time_filter_param = kw.pop(
-            "warpx_effective_potential_time_filter_param", None
-        )
-        self.effective_potential_density_floor = kw.pop(
-            "warpx_effective_potential_density_floor", None
-        )
-        self.cfl = kw.pop("warpx_cfl", None)
-        self.dt_update_interval = kw.pop("warpx_dt_update_interval", None)
-        self.max_dt = kw.pop("warpx_max_dt", None)
+        for lo, hi in pairs:
+            if (lo == "periodic") != (hi == "periodic"):
+                raise ValueError("sparse_lu requires paired periodic boundaries")
+        if any("open" in pair for pair in pairs) and any(
+            "periodic" in pair for pair in pairs
+        ):
+            raise ValueError(
+                "sparse_lu radial open boundaries cannot be combined with periodic boundaries"
+            )
+        if isinstance(self.grid, Cartesian1DGrid) and not any(
+            "dirichlet" in pair for pair in pairs
+        ):
+            raise ValueError(
+                "sparse_lu in Cartesian 1D requires at least one Dirichlet boundary"
+            )
+        if self.sparse_lu_open_reference_radius is not None:
+            if not isinstance(self.grid, Cartesian2DGrid) or not all(
+                lo == hi == "open" for lo, hi in pairs
+            ):
+                raise ValueError(
+                    "sparse_lu_open_reference_radius is only used for all-open 2D"
+                )
+            diagonal = np.linalg.norm(
+                np.asarray(self.grid.upper_bound) - np.asarray(self.grid.lower_bound)
+            )
+            if self.sparse_lu_open_reference_radius <= 0.5 * diagonal:
+                raise ValueError(
+                    "sparse_lu_open_reference_radius must exceed the domain half-diagonal"
+                )
+        # EB geometry belongs to Simulation, not this solver. Whether fixed
+        # potentials remove the nullspace is checked by the assembled C++ system.
+        return self
 
     def solver_initialize_inputs(self):
         # Open BC means FieldBoundaryType::Open for electrostatic sims, rather than perfectly-matched layer
         BC_map["open"] = "open"
 
         self.grid.grid_initialize_inputs()
+
+        radius = self.sparse_lu_open_reference_radius
+        if (
+            self.method == "sparse_lu"
+            and isinstance(self.grid, Cartesian2DGrid)
+            and all(bc == "open" for bc in self.grid.lower_boundary_conditions)
+            and all(bc == "open" for bc in self.grid.upper_boundary_conditions)
+            and radius is None
+        ):
+            radius = float(
+                3
+                * np.linalg.norm(
+                    np.asarray(self.grid.upper_bound)
+                    - np.asarray(self.grid.lower_bound)
+                )
+            )
+        pywarpx.warpx.sparse_lu_open_reference_radius = radius
 
         # set adaptive timestepping parameters
         pywarpx.warpx.cfl = self.cfl
@@ -5263,121 +5417,360 @@ class ReducedDiagnostic(picmistandard.base._ClassWithInit, WarpXDiagnosticBase):
         For diagnostic type 'FieldProbe', the vector specifying up in the 'Plane'
     """
 
-    def __init__(
-        self,
-        diag_type,
-        name=None,
-        period=None,
-        path=None,
-        extension=None,
-        separator=None,
-        **kw,
-    ):
-        self.name = name
-        self.type = diag_type
-        self.intervals = period
-        self.path = path
-        self.extension = extension
-        self.separator = separator
+    _simple_reduced_diagnostics: ClassVar[tuple[str, ...]] = (
+        "ParticleEnergy",
+        "ParticleMomentum",
+        "FieldEnergy",
+        "FieldMomentum",
+        "FieldMaximum",
+        "FieldPoyntingFlux",
+        "RhoMaximum",
+        "ParticleNumber",
+        "LoadBalanceCosts",
+        "LoadBalanceEfficiency",
+        "Timestep",
+    )
+    # these diagnostics require a species
+    _species_reduced_diagnostics: ClassVar[tuple[str, ...]] = (
+        "BeamRelevant",
+        "ParticleHistogram",
+        "ParticleHistogram2D",
+        "ParticleExtrema",
+    )
+    # per type: the parameters and their input names, with the arguments of expressions
+    _type_inputs: ClassVar[dict[str, dict[str, str]]] = {
+        "FieldProbe": {
+            name: name
+            for name in (
+                "probe_geometry",
+                "x_probe",
+                "y_probe",
+                "z_probe",
+                "interp_order",
+                "integrate",
+                "do_moving_window_FP",
+                "resolution",
+                "x1_probe",
+                "y1_probe",
+                "z1_probe",
+                "detector_radius",
+                "target_normal_x",
+                "target_normal_y",
+                "target_normal_z",
+                "target_up_x",
+                "target_up_y",
+                "target_up_z",
+            )
+        },
+        "ParticleHistogram": {
+            "bin_number": "bin_number",
+            "bin_max": "bin_max",
+            "bin_min": "bin_min",
+            "normalization": "normalization",
+            "histogram_function": "histogram_function(t,x,y,z,ux,uy,uz)",
+            "filter_function": "filter_function(t,x,y,z,ux,uy,uz)",
+        },
+        "ParticleHistogram2D": {
+            "bin_number_abs": "bin_number_abs",
+            "bin_number_ord": "bin_number_ord",
+            "bin_min_abs": "bin_min_abs",
+            "bin_max_abs": "bin_max_abs",
+            "bin_min_ord": "bin_min_ord",
+            "bin_max_ord": "bin_max_ord",
+            "histogram_function_abs": "histogram_function_abs(t,x,y,z,ux,uy,uz,w)",
+            "histogram_function_ord": "histogram_function_ord(t,x,y,z,ux,uy,uz,w)",
+            "filter_function": "filter_function(t,x,y,z,ux,uy,uz,w)",
+            "value_function": "value_function(t,x,y,z,ux,uy,uz,w)",
+        },
+        "FieldReduction": {
+            "reduction_type": "reduction_type",
+            "reduced_function": "reduced_function(x,y,z,Ex,Ey,Ez,Bx,By,Bz,jx,jy,jz)",
+        },
+        "ChargeOnEB": {
+            "weighting_function": "weighting_function(x,y,z)",
+        },
+        "ChargeFluxEB": {
+            "weighting_function": "weighting_function(x,y,z)",
+        },
+    }
+    _expression_fields: ClassVar[tuple[str, ...]] = (
+        "histogram_function",
+        "filter_function",
+        "histogram_function_abs",
+        "histogram_function_ord",
+        "value_function",
+        "reduced_function",
+        "weighting_function",
+    )
 
-        self.user_defined_kw = {}
+    diag_type: Literal[
+        "ParticleEnergy",
+        "ParticleMomentum",
+        "FieldEnergy",
+        "FieldMomentum",
+        "FieldMaximum",
+        "FieldPoyntingFlux",
+        "RhoMaximum",
+        "ParticleNumber",
+        "LoadBalanceCosts",
+        "LoadBalanceEfficiency",
+        "Timestep",
+        "BeamRelevant",
+        "ParticleHistogram",
+        "ParticleHistogram2D",
+        "ParticleExtrema",
+        "FieldProbe",
+        "FieldReduction",
+        "ChargeOnEB",
+        "ChargeFluxEB",
+    ] = Field(
+        description="The type of reduced diagnostic. See the link above for all the different types of reduced diagnostics available."
+    )
+    name: str | None = Field(
+        default=None,
+        description="The name of this diagnostic which will also be the name of the data file written to disk.",
+    )
+    period: int | str | None = Field(
+        default=None,
+        description="The simulation step interval at which to output this diagnostic.",
+    )
+    path: str | None = Field(
+        default=None,
+        description="The file path in which the diagnostic file should be written.",
+    )
+    extension: str | None = Field(
+        default=None, description="The file extension used for the diagnostic output."
+    )
+    separator: str | None = Field(
+        default=None, description="The separator between row values in the output file."
+    )
+    species: Species | None = Field(
+        default=None,
+        description="The species for which to calculate the diagnostic, required for diagnostic types 'BeamRelevant', 'ParticleHistogram', 'ParticleHistogram2D', and 'ParticleExtrema'",
+    )
 
-        # Now we need to handle all the specific inputs required for the
-        # different reduced diagnostic types.
+    # ParticleHistogram
+    bin_number: int | None = Field(
+        default=None,
+        description="For diagnostic type 'ParticleHistogram', the number of bins used for the histogram",
+    )
+    bin_max: float | None = Field(
+        default=None,
+        description="For diagnostic type 'ParticleHistogram', the maximum value of the bins",
+    )
+    bin_min: float | None = Field(
+        default=None,
+        description="For diagnostic type 'ParticleHistogram', the minimum value of the bins",
+    )
+    normalization: (
+        Literal["unity_particle_weight", "max_to_unity", "area_to_unity"] | None
+    ) = Field(
+        default=None,
+        description="For diagnostic type 'ParticleHistogram', normalization method of the histogram.",
+    )
+    histogram_function: Expression | None = Field(
+        default=None,
+        description="For diagnostic type 'ParticleHistogram', the function evaluated to produce the histogram data",
+    )
+    filter_function: Expression | None = Field(
+        default=None,
+        description="For diagnostic types 'ParticleHistogram' and 'ParticleHistogram2D', the function to filter whether particles are included in the histogram",
+    )
 
-        # The simple diagnostics do not require any additional arguments
-        self._simple_reduced_diagnostics = [
-            "ParticleEnergy",
-            "ParticleMomentum",
-            "FieldEnergy",
-            "FieldMomentum",
-            "FieldMaximum",
-            "FieldPoyntingFlux",
-            "RhoMaximum",
-            "ParticleNumber",
-            "LoadBalanceCosts",
-            "LoadBalanceEfficiency",
-            "Timestep",
-        ]
-        # The species diagnostics require a species to be provided
-        self._species_reduced_diagnostics = [
-            "BeamRelevant",
-            "ParticleHistogram",
-            "ParticleHistogram2D",
-            "ParticleExtrema",
-        ]
+    # ParticleHistogram2D
+    bin_max_abs: float | None = Field(
+        default=None,
+        description="For diagnostic type 'ParticleHistogram2D', the maximum value of the bins for the abscissa axis.",
+    )
+    bin_max_ord: float | None = Field(
+        default=None,
+        description="For diagnostic type 'ParticleHistogram2D', the maximum value of the bins for the ordinate axis.",
+    )
+    bin_min_abs: float | None = Field(
+        default=None,
+        description="For diagnostic type 'ParticleHistogram2D', the minimum value of the bins for the abscissa axis.",
+    )
+    bin_min_ord: float | None = Field(
+        default=None,
+        description="For diagnostic type 'ParticleHistogram2D', the minimum value of the bins for the ordinate axis.",
+    )
+    bin_number_abs: int | None = Field(
+        default=None,
+        description="For diagnostic type 'ParticleHistogram2D', the number of bins used for the histogram for the abscissa axis.",
+    )
+    bin_number_ord: int | None = Field(
+        default=None,
+        description="For diagnostic type 'ParticleHistogram2D', the number of bins used for the histogram for the ordinate axis.",
+    )
+    histogram_function_abs: Expression | None = Field(
+        default=None,
+        description="For diagnostic type 'ParticleHistogram2D', the histogram function for the abscissa axis.",
+    )
+    histogram_function_ord: Expression | None = Field(
+        default=None,
+        description="For diagnostic type 'ParticleHistogram2D', the histogram function for the ordinate axis.",
+    )
+    value_function: Expression | None = Field(
+        default=None,
+        description="For diagnostic type 'ParticleHistogram2D', the expression for the weight used to calculate the histogram.",
+    )
 
-        if self.type in self._simple_reduced_diagnostics:
-            pass
-        elif self.type in self._species_reduced_diagnostics:
-            species = kw.pop("species")
-            self.species = species.name
-            if self.type == "ParticleHistogram":
-                kw = self._handle_particle_histogram(**kw)
-            elif self.type == "ParticleHistogram2D":
-                kw = self._handle_particle_histogram2d(**kw)
-        elif self.type == "FieldProbe":
-            kw = self._handle_field_probe(**kw)
-        elif self.type == "FieldReduction":
-            kw = self._handle_field_reduction(**kw)
-        elif self.type == "ChargeOnEB":
-            kw = self._handle_charge_on_eb(**kw)
-        else:
-            raise RuntimeError(
-                f"{self.type} reduced diagnostic is not yet supported in pywarpx."
+    # FieldReduction
+    reduced_function: Expression | None = Field(
+        default=None,
+        description="For diagnostic type 'FieldReduction', the function of the fields to evaluate",
+    )
+    reduction_type: Literal["Maximum", "Minimum", "Integral"] | None = Field(
+        default=None,
+        description="For diagnostic type 'FieldReduction', the type of reduction",
+    )
+
+    # ChargeOnEB and ChargeFluxEB
+    weighting_function: Expression | None = Field(
+        default=None,
+        description="For diagnostic type 'ChargeOnEB' and 'ChargeFluxEB', the function to weight contributions to the total charge (flux)",
+    )
+
+    # FieldProbe
+    probe_geometry: str | None = Field(
+        default=None,
+        description="For 'FieldProbe', the geometry of the probe: 'Point', 'Line', or 'Plane'",
+    )
+    integrate: bool | None = Field(
+        default=None,
+        description="For diagnostic type 'FieldProbe', whether the field is integrated (default False)",
+    )
+    do_moving_window_FP: bool | None = Field(
+        default=None,
+        description="For diagnostic type 'FieldProbe', whether the moving window is followed (default False)",
+    )
+    x_probe: float | None = Field(
+        default=None,
+        description="For 'FieldProbe', a probe location. For 'Point', the location of the point. For 'Line', the start of the line. For 'Plane', the center of the square detector.",
+    )
+    y_probe: float | None = Field(
+        default=None, description="For 'FieldProbe', see ``x_probe``"
+    )
+    z_probe: float | None = Field(
+        default=None, description="For 'FieldProbe', see ``x_probe``"
+    )
+    interp_order: int | None = Field(
+        default=None,
+        description="Interpolation order for 'FieldProbe'.",
+    )
+    resolution: int | None = Field(
+        default=None,
+        description="For 'FieldProbe', the number of points along the 'Line' or along each edge of the square 'Plane'",
+    )
+    x1_probe: float | None = Field(
+        default=None,
+        description="For 'FieldProbe', the end point for 'Line'",
+    )
+    y1_probe: float | None = Field(
+        default=None,
+        description="For 'FieldProbe', the end point for 'Line'",
+    )
+    z1_probe: float | None = Field(
+        default=None,
+        description="For 'FieldProbe', the end point for 'Line'",
+    )
+    detector_radius: float | None = Field(
+        default=None,
+        description="For 'FieldProbe', the detector radius of the 'Plane'.",
+    )
+    target_normal_x: float | None = Field(
+        default=None,
+        description="For 'FieldProbe', the normal vector to the 'Plane'. Only applicable in 3D",
+    )
+    target_normal_y: float | None = Field(
+        default=None,
+        description="For 'FieldProbe', the normal vector to the 'Plane'. Only applicable in 3D",
+    )
+    target_normal_z: float | None = Field(
+        default=None,
+        description="For 'FieldProbe', the normal vector to the 'Plane'. Only applicable in 3D",
+    )
+    target_up_x: float | None = Field(
+        default=None,
+        description="For 'FieldProbe', the vector specifying up in the 'Plane'",
+    )
+    target_up_y: float | None = Field(
+        default=None,
+        description="For 'FieldProbe', the vector specifying up in the 'Plane'",
+    )
+    target_up_z: float | None = Field(
+        default=None,
+        description="For 'FieldProbe', the vector specifying up in the 'Plane'",
+    )
+
+    user_defined_kw: dict = Field(
+        default_factory=dict,
+        description="Constants referenced in the expressions, collected from otherwise-unrecognized keyword arguments.",
+    )
+
+    # Runtime state populated during diagnostic_initialize_inputs / WarpXDiagnosticBase.
+    _diagnostic: pywarpx.Diagnostics.Diagnostic | None = PrivateAttr(default=None)
+    _mangle_dict: dict | None = PrivateAttr(default=None)
+
+    @classmethod
+    def _parameter_names(cls, data):
+        # The parameters of the other types of reduced diagnostics are not used by this one, so
+        # that expressions can use their names, too, e.g., ``resolution`` of the FieldProbe.
+        used = set(cls._type_inputs.get(data.get("diag_type"), {}))
+        not_used = {
+            name for inputs in cls._type_inputs.values() for name in inputs
+        } - used
+        return super()._parameter_names(data) - {
+            name for name in not_used if data.get(name) is not None
+        }
+
+    @model_validator(mode="after")
+    def _check_parameters_of_type(self) -> Self:
+        required = []
+        if self.diag_type in self._species_reduced_diagnostics:
+            required.append("species")
+        elif self.species is not None:
+            raise ValueError(
+                f"species is not used by the {self.diag_type} reduced diagnostic"
             )
 
-        self.handle_init(kw)
-
-    def _handle_field_probe(self, **kw):
-        """Utility function to grab required inputs for a field probe from kw"""
-        self.probe_geometry = kw.pop("probe_geometry")
-        self.x_probe = kw.pop("x_probe", None)
-        self.y_probe = kw.pop("y_probe", None)
-        self.z_probe = kw.pop("z_probe")
-
-        self.interp_order = kw.pop("interp_order", None)
-        self.integrate = kw.pop("integrate", None)
-        self.do_moving_window_FP = kw.pop("do_moving_window_FP", None)
-
-        if self.probe_geometry.lower() != "point":
-            self.resolution = kw.pop("resolution")
-
-        if self.probe_geometry.lower() == "line":
-            self.x1_probe = kw.pop("x1_probe", None)
-            self.y1_probe = kw.pop("y1_probe", None)
-            self.z1_probe = kw.pop("z1_probe")
-
-        if self.probe_geometry.lower() == "plane":
-            self.detector_radius = kw.pop("detector_radius")
-
-            self.target_normal_x = kw.pop("target_normal_x", None)
-            self.target_normal_y = kw.pop("target_normal_y", None)
-            self.target_normal_z = kw.pop("target_normal_z", None)
-
-            self.target_up_x = kw.pop("target_up_x", None)
-            self.target_up_y = kw.pop("target_up_y", None)
-            self.target_up_z = kw.pop("target_up_z", None)
-
-        return kw
-
-    def _handle_particle_histogram(self, **kw):
-        self.bin_number = kw.pop("bin_number")
-        self.bin_max = kw.pop("bin_max")
-        self.bin_min = kw.pop("bin_min")
-        self.normalization = kw.pop("normalization", None)
-        if self.normalization not in [
-            None,
-            "unity_particle_weight",
-            "max_to_unity",
-            "area_to_unity",
-        ]:
-            raise AttributeError(
-                "The ParticleHistogram normalization must be one of 'unity_particle_weight', 'max_to_unity', or 'area_to_unity'"
-            )
-
-        histogram_function = kw.pop("histogram_function")
-        filter_function = kw.pop("filter_function", None)
+        used = set(self._type_inputs.get(self.diag_type, {}))
+        if self.diag_type == "ParticleHistogram":
+            required += ["bin_number", "bin_max", "bin_min", "histogram_function"]
+        elif self.diag_type == "ParticleHistogram2D":
+            required += [
+                "bin_number_abs",
+                "bin_number_ord",
+                "bin_min_abs",
+                "bin_max_abs",
+                "bin_min_ord",
+                "bin_max_ord",
+                "histogram_function_abs",
+                "histogram_function_ord",
+            ]
+        elif self.diag_type == "FieldReduction":
+            required += ["reduction_type", "reduced_function"]
+        elif self.diag_type == "FieldProbe":
+            required += ["probe_geometry", "z_probe"]
+            geometry = (self.probe_geometry or "").lower()
+            if geometry != "point":
+                required.append("resolution")
+            if geometry != "line":
+                used -= {"x1_probe", "y1_probe", "z1_probe"}
+            else:
+                required.append("z1_probe")
+            if geometry != "plane":
+                used -= {
+                    "detector_radius",
+                    "target_normal_x",
+                    "target_normal_y",
+                    "target_normal_z",
+                    "target_up_x",
+                    "target_up_y",
+                    "target_up_z",
+                }
+            else:
+                required.append("detector_radius")
 
         self.__setattr__("histogram_function(t,x,y,z,ux,uy,uz)", histogram_function)
         self.__setattr__("filter_function(t,x,y,z,ux,uy,uz)", filter_function)
