@@ -182,7 +182,7 @@ void LabFrameExplicitES::ComputePhiSparseLU (
             "sparse_lu_open_reference_radius", open_reference_radius);
         m_sparse_lu = std::make_unique<SparseLUPoissonSolver>(
             warpx.Geom(0), warpx.boxArray(0), warpx.DistributionMap(0),
-            factory, self_fields_verbosity, lo, hi, open_reference_radius);
+            factory, m_mlmg_options.verbosity, lo, hi, open_reference_radius);
         m_sparse_lu_rhs = std::make_unique<amrex::MultiFab>(
             rho.boxArray(), rho.DistributionMap(), 1, 0);
     }

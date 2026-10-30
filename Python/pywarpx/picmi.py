@@ -2447,12 +2447,27 @@ class ElectrostaticSolver(picmistandard.PICMI_ElectrostaticSolver):
     MLMG Poisson solver convergence for the labframe electrostatic solvers. When `warpx_magnetostatic=True`,
     these parameters are used as defaults for the magnetostatic solver but can be overridden
     with the explicit `warpx_magnetostatic_*` parameters.
+
+    ``method="sparse_lu"`` selects a cached PETSc/MUMPS factorization for one
+    uniform Cartesian level. Cartesian 1D supports Dirichlet boundaries with
+    at most one open face. Cartesian 2D and 3D support Dirichlet, periodic, or
+    radial open boundaries; periodic and open boundaries cannot be combined.
     """
 
     model_config = ConfigDict(
         alias_generator=warpx_options(picmistandard.PICMI_ElectrostaticSolver)
     )
 
+    method: Literal["FFT", "Multigrid", "sparse_lu"] | None = Field(
+        default=None,
+        description="Poisson solver method. 'sparse_lu' uses a cached PETSc/MUMPS LU factorization on a single uniform Cartesian level.",
+    )
+    sparse_lu_open_reference_radius: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        description="For all-open Cartesian 2D sparse_lu: radius where the logarithmic far-field potential is zero, in meters. Defaults to three times the domain diagonal. Must exceed the domain half-diagonal.",
+    )
     relativistic: bool = Field(
         default=False,
         description="Whether to use the relativistic solver or lab frame solver",

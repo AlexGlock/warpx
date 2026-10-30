@@ -1,20 +1,36 @@
 """Check the WarpX method extension without loading a compiled Python library."""
 
+from pydantic import ValidationError
+
 import picmistandard
 import pywarpx
 from pywarpx import picmi
 
 
 def grid(dim, **kwargs):
-    cls = picmi.Cartesian2DGrid if dim == 2 else picmi.Cartesian3DGrid
-    return cls(
+    cls = {
+        1: picmi.Cartesian1DGrid,
+        2: picmi.Cartesian2DGrid,
+        3: picmi.Cartesian3DGrid,
+    }[dim]
+    inputs = dict(
         number_of_cells=[16] * dim,
         lower_bound=[0.0] * dim,
         upper_bound=[1.0] * dim,
         lower_boundary_conditions=["dirichlet"] * dim,
         upper_boundary_conditions=["dirichlet"] * dim,
-        **kwargs,
     )
+    inputs.update(kwargs)
+    return cls(**inputs)
+
+
+def expect_invalid(message, **kwargs):
+    try:
+        picmi.ElectrostaticSolver(**kwargs)
+    except ValidationError as exc:
+        assert message in str(exc), str(exc)
+    else:
+        raise AssertionError(f"Expected validation error: {message}")
 
 
 original_methods = list(picmistandard.PICMI_ElectrostaticSolver.methods_list)
@@ -36,8 +52,23 @@ for dim in (1, 2, 3):
         assert pywarpx.amr.max_level == 0
 
 assert picmistandard.PICMI_ElectrostaticSolver.methods_list == original_methods
-for method in (None, "Multigrid", "FFT"):
-    assert picmi.ElectrostaticSolver(grid=grid(2), method=method).method == method
+assert (
+    picmistandard.PICMI_ElectrostaticSolver.model_fields["method"].annotation
+    == original_method_type
+)
+for method, expected in (
+    (None, None),
+    ("Multigrid", "Multigrid"),
+    ("multigrid", "Multigrid"),
+    ("FFT", "FFT"),
+    ("fft", "FFT"),
+):
+    assert picmi.ElectrostaticSolver(grid=grid(3), method=method).method == expected
+
+expect_invalid("method", grid=grid(2), method="unknown_solver")
+solver = picmi.ElectrostaticSolver(grid=grid(2), method="Multigrid")
+solver.method = "SPARSE_LU"
+assert solver.method == "sparse_lu"
 
 for kw in (
     {"warpx_relativistic": True},
