@@ -30,7 +30,8 @@ public:
         ablastr::fields::MultiFabRegister& fields,
         MultiParticleContainer& mpc,
         MultiFluidContainer* mfl,
-        int max_level) override;
+        int max_level,
+        bool verbose_step) override;
 
     void computePhiTriDiagonal (
         const ablastr::fields::MultiLevelScalarField& rho,
