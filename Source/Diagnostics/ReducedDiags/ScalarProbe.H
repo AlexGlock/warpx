@@ -24,6 +24,7 @@ public:
 
 private:
     using Position = amrex::GpuArray<amrex::Real, 3>;
+
     std::vector<Position> m_positions;
     std::vector<int> m_levels;
 
