@@ -161,6 +161,10 @@ void JacobianFunctionMF<T,Ops>::define ( const T& a_U,
     if (m_usePreCond) {
         m_pc_type = a_pc_type;
         if (m_pc_type == PreconditionerType::pc_curl_curl_mlmg) {
+#if defined(WARPX_DIM_RSPHERE)
+            WARPX_ABORT_WITH_MESSAGE(
+                "curl_curl_mlmg is not a valid pc_type for RSPHERE geometry, which is electrostatic.");
+#endif
             m_preCond = std::make_unique<CurlCurlMLMGPC<T,Ops>>();
         } else if (m_pc_type == PreconditionerType::pc_jacobi) {
             m_preCond = std::make_unique<JacobiPC<T,Ops>>();
@@ -227,7 +231,7 @@ void JacobianFunctionMF<T,Ops>::apply (T& a_dF, const T& a_dU)
 
         m_Z.linComb( 1.0, m_Y0, eps, a_dU ); // Z = Y0 + eps*dU
         m_ops->ComputeRHS(m_R, m_Z, m_cur_time, /*a_nl_iter=*/-1,
-                          /*a_from_jacobian=*/true, /*update_pc=*/false);
+                          /*a_from_jacobian=*/true);
 
         // F(Y) = Y - b - R(Y) ==> dF = dF/dY*dU = [1 - dR/dY]*dU
         //                            = dU - (R(Z)-R(Y0))/eps
