@@ -147,7 +147,7 @@ void SemiImplicitDarwin::PrintParameters () const
     amrex::Print() << "-----------------------------------------------------------\n\n";
 }
 
-int SemiImplicitDarwin::OneStep ( [[maybe_unused]] amrex::Real  start_time,
+int SemiImplicitDarwin::OneStep ( amrex::Real  start_time,
                                                    amrex::Real  a_dt,
                                                    int          a_step,
                                                    bool verbose_step)
@@ -158,6 +158,8 @@ int SemiImplicitDarwin::OneStep ( [[maybe_unused]] amrex::Real  start_time,
 
     // Set the member time step
     m_dt = a_dt;
+    // The velocity advance is centered at t^n; evaluate external maps at that time.
+    m_field_time = start_time;
 
     const int finest_level = 0;
 
@@ -278,8 +280,7 @@ void SemiImplicitDarwin::ComputeRHS ( [[maybe_unused]] WarpXSolverVec& a_RHS,
                                       [[maybe_unused]] const WarpXSolverVec& a_Z,
                                       [[maybe_unused]] amrex::Real start_time,
                                       [[maybe_unused]] int a_nl_iter,
-                                      [[maybe_unused]] bool a_from_jacobian,
-                                      [[maybe_unused]] const bool update_pc )
+                                      [[maybe_unused]] bool a_from_jacobian )
 {
     // The Darwin scheme is linear in its unknown and never installs a
     // nonlinear solver, so it has no nonlinear residual to compute. This
@@ -373,7 +374,9 @@ void SemiImplicitDarwin::AccumulateCurrentAndMassMatrices ()
     // (see ImplicitSolver::PreLinearSolve), which drive the same
     // WarpX::DepositMassMatrices() -> MultiParticleContainer::DepositMassMatrices(),
     // here with the magnetostatic particle shape (set in m_implicit_options).
-    m_WarpX->DepositMassMatrices(m_dt, m_implicit_options);
+    ImplicitOptions options = m_implicit_options;
+    options.field_time = m_field_time;
+    m_WarpX->DepositMassMatrices(m_dt, options);
 
     // The deposit routine only fills half of each diagonal mass matrix's
     // band (exploiting symmetry); mirror the other half to complete

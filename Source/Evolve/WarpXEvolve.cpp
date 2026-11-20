@@ -229,22 +229,18 @@ WarpX::Evolve (int numsteps)
         // multi-physics: field ionization
         doFieldIonization();
 
-#ifdef WARPX_QED
         // multi-physics: QED effects
+#ifdef WARPX_QED
         doQEDEvents();
-        mypc->doQEDSchwinger();
 #endif
+        mypc->doQEDSchwinger();
+
 
         // perform particle injection
         ExecutePythonCallback("particleinjection");
 
         // perform collisions and advance fields and particles by one time step
         OneStep(cur_time, dt[0], step, verbose_step);
-
-        // Resample particles
-        // +1 is necessary here because value of step seen by user (first step is 1) is different than
-        // value of step in code (first step is 0)
-        mypc->doResampling(Geom(), istep[0]+1, verbose_step);
 
         if (evolve_scheme == EvolveScheme::Explicit) {
             applyMirrors(cur_time);
@@ -283,6 +279,13 @@ WarpX::Evolve (int numsteps)
         mypc->ContinuousFluxInjection(cur_time, dt[0]);
 
         HandleParticlesAtBoundaries(step, cur_time, num_moved);
+
+        // Resampling requires the particles to be redistributed, which the
+        // boundary handler above does.  Running resampling and Redistribute()
+        // before the boundary handler can remove particles that ought to have
+        // been handled by the boundary conditions.
+        // +1 because the user-facing step number starts at 1, while step starts at 0.
+        mypc->doResampling(Geom(), step+1, verbose_step);
 
         // Apply particle thermalizer (no-op until implemented)
         if (m_particle_thermalizer.defined()) {
@@ -392,6 +395,15 @@ WarpX::Evolve (int numsteps)
         if (checkStopSimulation(cur_time)) {
             break;
         }
+
+#if defined(AMREX_TINY_PROFILING) && !defined(BL_PROFILING)
+        // Collective (MPI reductions/gathers): must be called on the same steps on all ranks.
+        if (m_tiny_profiler_flush_interval.contains(step+1)) {
+            amrex::Print() << "Tiny profiler flush at step " << step+1 << "\n";
+            BL_PROFILE("WarpX::TinyProfilerFlush");
+            BL_PROFILE_TINY_FLUSH();
+        }
+#endif
     } // End loop on time steps
 
     // This if statement is needed for PICMI, which allows the Evolve routine to be
@@ -924,6 +936,10 @@ void WarpX::FinalizeJOnLevel (int lev, amrex::MultiFab* Jx, amrex::MultiFab* Jy,
                               amrex::MultiFab* Jz, PatchType patch_type)
 {
     ApplyJfieldBoundary(lev, Jx, Jy, Jz, patch_type);
+#if defined(WARPX_DIM_RZ) || defined(WARPX_DIM_RCYLINDER) || defined(WARPX_DIM_RSPHERE)
+    const int glev = (patch_type == PatchType::fine) ? lev : lev - 1;
+    ApplyInverseVolumeScalingToCurrentDensity(Jx, Jy, Jz, glev);
+#endif
 }
 
 void WarpX::FinalizeRho ()
@@ -1490,6 +1506,22 @@ WarpX::PushParticlesandDeposit (
     ImplicitOptions const * implicit_options
 )
 {
+    // TODO: Centralize gather-field preparation for explicit and implicit
+    // particle pushes, including paths that bypass this function (Darwin).
+    // Cache the time-scaled external particle fields in a separate container,
+    // updated at each distinct stage time, including substeps and retries. Before
+    // each gather, all solver paths should use the same centralized preparation
+    // routine to rebuild aux from the current fp fields (with any required mesh
+    // refinement corrections or centering) and add the cached external contribution.
+    // This keeps aux current during implicit iterations without recomputing the
+    // external contribution or modifying the fields used by the field solver.
+    if (implicit_options) {
+        // Implicit iterations change the simulation fields before each push.
+        // Refresh the gather fields and scale external particle maps at the stage time.
+        UpdateAuxiliaryData(cur_time);
+        FillBoundaryAux(guard_cells.ng_UpdateAux);
+    }
+
     // Evolve particles to p^{n+1/2} and x^{n+1}
     // Deposit current, j^{n+1/2}
     for (int lev = 0; lev <= finest_level; ++lev) {
@@ -1549,42 +1581,13 @@ WarpX::PushParticlesandDeposit (
         implicit_options
     );
 
-    if (!skip_deposition) {
-#if defined(WARPX_DIM_RZ) || defined(WARPX_DIM_RCYLINDER) || defined(WARPX_DIM_RSPHERE)
-        // This is called after all particles have deposited their current and charge.
-        if (!implicit_options) {
-            // Skip scaling J here for the implicit solvers: the total current is
-            // accumulated from multiple containers after this call (see CumulateJ()
-            // and ComputeJfromMassMatrices()), and is scaled in PreRHSOp().
-            ApplyInverseVolumeScalingToCurrentDensity(
-                m_fields.get(FieldType::current_fp, Direction{0}, lev),
-                m_fields.get(FieldType::current_fp, Direction{1}, lev),
-                m_fields.get(FieldType::current_fp, Direction{2}, lev),
-                lev);
-            if (m_fields.has_vector(FieldType::current_buf, lev)) {
-                ApplyInverseVolumeScalingToCurrentDensity(
-                    m_fields.get(FieldType::current_buf, Direction{0}, lev),
-                    m_fields.get(FieldType::current_buf, Direction{1}, lev),
-                    m_fields.get(FieldType::current_buf, Direction{2}, lev),
-                    lev-1);
-            }
-        }
-// #else
-        // I left this comment here as a reminder that currently the
-        // boundary handling for cartesian grids are not matching the RZ handling
-        // (done in the ApplyInverseScalingToChargeDensity function). The
-        // Cartesian grid code had to be moved from here to after the application
-        // of the filter to avoid incorrect results (moved to `SyncCurrentAndRho()`).
-        // Might this be related to issue #1943?
-#endif
-        if (do_fluid_species && !implicit_options) {
-            myfl->Evolve(m_fields,
-                         lev,
-                         current_fp_string,
-                         cur_time,
-                         skip_deposition
-            );
-        }
+    if (do_fluid_species && !implicit_options && !skip_deposition) {
+        myfl->Evolve(m_fields,
+                     lev,
+                     current_fp_string,
+                     cur_time,
+                     skip_deposition
+        );
     }
 }
 
