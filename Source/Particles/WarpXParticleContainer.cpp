@@ -502,6 +502,8 @@ WarpXParticleContainer::DepositCurrent (WarpXParIter& pti,
             direct_current_dep_kernel);
     ABLASTR_PROFILE_VAR_NS("WarpXParticleContainer::DepositCurrent::EsirkepovCurrentDepKernel",
             esirkepov_current_dep_kernel);
+    ABLASTR_PROFILE_VAR_NS("WarpXParticleContainer::DepositCurrent::VillasenorCurrentDepKernel",
+            villasenor_current_dep_kernel);
     ABLASTR_PROFILE_VAR_NS("WarpXParticleContainer::DepositCurrent::CurrentDeposition", blp_deposit);
     ABLASTR_PROFILE_VAR_NS("WarpXParticleContainer::DepositCurrent::Accumulate", blp_accumulate);
 
@@ -675,8 +677,6 @@ WarpXParticleContainer::DepositCurrent (WarpXParIter& pti,
         }
         ABLASTR_PROFILE_VAR_STOP(blp_sort);
         ABLASTR_PROFILE_VAR_START(blp_get_max_tilesize);
-            //get the maximum size necessary for shared mem
-            // get tile boxes
         //get the maximum size necessary for shared mem
 #if AMREX_SPACEDIM > 0
         const int sizeX = getMaxTboxAlongDim(box.size()[0], WarpX::shared_tilesize[0]);
@@ -694,11 +694,25 @@ WarpXParticleContainer::DepositCurrent (WarpXParIter& pti,
         if (push_type == PushType::Implicit) {
             amrex::Abort("Cannot do shared memory deposition with implicit algorithm");
         }
-        if (WarpX::current_deposition_algo == CurrentDepositionAlgo::Villasenor) {
-            WARPX_ABORT_WITH_MESSAGE("Cannot do shared memory deposition with Villasenor algorithm");
-        }
-        else if (WarpX::current_deposition_algo == CurrentDepositionAlgo::Vay) {
+        if (WarpX::current_deposition_algo == CurrentDepositionAlgo::Vay) {
             WARPX_ABORT_WITH_MESSAGE("Cannot do shared memory deposition with Vay algorithm");
+        }
+        else if (WarpX::current_deposition_algo == CurrentDepositionAlgo::Villasenor) {
+            ABLASTR_PROFILE_VAR_START(villasenor_current_dep_kernel);
+
+            const int threads_per_block = WarpX::shared_mem_current_tpb;
+
+            amrex::AnyCTO(
+                amrex::TypeList<amrex::CompileTimeOptions<1,2,3,4>>{}, {WarpX::nox},
+                [&](auto depos_order) {
+                    doVillasenorDepositionSharedShapeN<depos_order.value>(
+                        GetPosition, wp.dataPtr() + offset, uxp.dataPtr() + offset,
+                        uyp.dataPtr() + offset, uzp.dataPtr() + offset, ion_lev_offset,
+                        jx_fab, jy_fab, jz_fab, dt, relative_time, dinv, xyzmin,
+                        domain_double, do_cropping, lo, q, WarpX::n_rz_azimuthal_modes,
+                        bins, box, geom, max_tbox_size, threads_per_block, bin_size);
+                });
+            ABLASTR_PROFILE_VAR_STOP(villasenor_current_dep_kernel);
         }
         else if (WarpX::current_deposition_algo == CurrentDepositionAlgo::Esirkepov) {
             ABLASTR_PROFILE_VAR_START(esirkepov_current_dep_kernel);
@@ -733,31 +747,35 @@ WarpXParticleContainer::DepositCurrent (WarpXParIter& pti,
                         uyp.dataPtr() + offset, uzp.dataPtr() + offset, ion_lev_offset,
                         jx_fab, jy_fab, jz_fab, np_to_deposit, relative_time, dinv,
                         xyzmin, lo, q, WarpX::n_rz_azimuthal_modes,
-                        bins, box, geom, max_tbox_size, threads_per_block, bin_size);
+                        bins, box, max_tbox_size, threads_per_block, bin_size);
             } else if (particle_shape == 2){
                 doDepositionSharedShapeN<2>(
                         GetPosition, wp.dataPtr() + offset, uxp.dataPtr() + offset,
                         uyp.dataPtr() + offset, uzp.dataPtr() + offset, ion_lev_offset,
                         jx_fab, jy_fab, jz_fab, np_to_deposit, relative_time, dinv,
                         xyzmin, lo, q, WarpX::n_rz_azimuthal_modes,
-                        bins, box, geom, max_tbox_size, threads_per_block, bin_size);
+                        bins, box, max_tbox_size, threads_per_block, bin_size);
             } else if (particle_shape == 3){
                 doDepositionSharedShapeN<3>(
                         GetPosition, wp.dataPtr() + offset, uxp.dataPtr() + offset,
                         uyp.dataPtr() + offset, uzp.dataPtr() + offset, ion_lev_offset,
                         jx_fab, jy_fab, jz_fab, np_to_deposit, relative_time, dinv,
                         xyzmin, lo, q, WarpX::n_rz_azimuthal_modes,
-                        bins, box, geom, max_tbox_size, threads_per_block, bin_size);
+                        bins, box, max_tbox_size, threads_per_block, bin_size);
             } else if (particle_shape == 4){
                 doDepositionSharedShapeN<4>(
                         GetPosition, wp.dataPtr() + offset, uxp.dataPtr() + offset,
                         uyp.dataPtr() + offset, uzp.dataPtr() + offset, ion_lev_offset,
                         jx_fab, jy_fab, jz_fab, np_to_deposit, relative_time, dinv,
                         xyzmin, lo, q, WarpX::n_rz_azimuthal_modes,
-                        bins, box, geom, max_tbox_size, threads_per_block, bin_size);
+                        bins, box, max_tbox_size, threads_per_block, bin_size);
             }
             ABLASTR_PROFILE_VAR_STOP(direct_current_dep_kernel);
         }
+
+        // The shared kernels run asynchronously and read the bins, which are freed at the end of
+        // this scope: wait for it, so that their memory cannot be reused while it runs.
+        amrex::Gpu::streamSynchronize();
     }
     // If not doing shared memory deposition (or depositing in the buffers), call normal kernels
     else {
@@ -1214,7 +1232,7 @@ WarpXParticleContainer::DepositMassMatrices (WarpXParIter& pti, const RealVector
     const amrex::IndexType By_type = By->box().ixType();
     const amrex::IndexType Bz_type = Bz->box().ixType();
 
-    const auto getExternalEB = GetExternalEBField(pti, offset);
+    const auto getExternalEB = GetExternalEBField(pti, offset, implicit_options.field_time);
 
     // Get uniform external B-field
     const amrex::ParticleReal Bx_ext = m_B_external_particle[0];
@@ -1779,7 +1797,6 @@ WarpXParticleContainer::DepositCharge (WarpXParIter& pti, RealVector const& wp,
         // Like the other particle attributes, ion_lev points to the start of the tile:
         // offset it so that the kernels deposit particles [offset, offset+np_to_deposit)
         int const * const ion_lev_offset = (ion_lev != nullptr) ? ion_lev + offset : nullptr;
-        const Geometry& geom = Geom(lev);
         Box box = pti.validbox();
         box.grow(ng_rho);
 
@@ -1787,27 +1804,30 @@ WarpXParticleContainer::DepositCharge (WarpXParIter& pti, RealVector const& wp,
             doChargeDepositionSharedShapeN<1>(GetPosition, wp.dataPtr()+offset, ion_lev_offset,
                                               rho_fab, ix_type, np_to_deposit, dinv, xyzmin, lo, q,
                                               WarpX::n_rz_azimuthal_modes,
-                                              bins, box, geom, max_tbox_size,
+                                              bins, box, max_tbox_size,
                                               WarpX::shared_tilesize);
         } else if (WarpX::nox == 2){
             doChargeDepositionSharedShapeN<2>(GetPosition, wp.dataPtr()+offset, ion_lev_offset,
                                               rho_fab, ix_type, np_to_deposit, dinv, xyzmin, lo, q,
                                               WarpX::n_rz_azimuthal_modes,
-                                              bins, box, geom, max_tbox_size,
+                                              bins, box, max_tbox_size,
                                               WarpX::shared_tilesize);
         } else if (WarpX::nox == 3){
             doChargeDepositionSharedShapeN<3>(GetPosition, wp.dataPtr()+offset, ion_lev_offset,
                                               rho_fab, ix_type, np_to_deposit, dinv, xyzmin, lo, q,
                                               WarpX::n_rz_azimuthal_modes,
-                                              bins, box, geom, max_tbox_size,
+                                              bins, box, max_tbox_size,
                                               WarpX::shared_tilesize);
         } else if (WarpX::nox == 4){
             doChargeDepositionSharedShapeN<4>(GetPosition, wp.dataPtr()+offset, ion_lev_offset,
                                               rho_fab, ix_type, np_to_deposit, dinv, xyzmin, lo, q,
                                               WarpX::n_rz_azimuthal_modes,
-                                              bins, box, geom, max_tbox_size,
+                                              bins, box, max_tbox_size,
                                               WarpX::shared_tilesize);
         }
+        // The kernel runs asynchronously and reads the bins, which are freed at the end of
+        // this scope: wait for it, so that their memory cannot be reused while it runs.
+        amrex::Gpu::streamSynchronize();
 #ifndef AMREX_USE_GPU
         // CPU, tiling: atomicAdd local_rho into rho
         ABLASTR_PROFILE_VAR_START(blp_accumulate);

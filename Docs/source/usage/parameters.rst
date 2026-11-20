@@ -2014,10 +2014,15 @@ Particle initialization
       An additional parameter, indicating the path of an openPMD data file,
       ``<species_name>.read_density_from_path`` must be specified. The openPMD
       file must contain a field with the name given by ``<species_name>.density_mesh_name``
-      (default ``density``). See
-      `this file <https://github.com/BLAST-WarpX/warpx/blob/development/Examples/Tests/load_density/inputs_test_3d_load_density_prepare.py>`__
-      for an example of how to prepare the openPMD data file. There is
-      another optional parameter,
+      (default ``density``). See the following files for examples of how to prepare
+      the openPMD data file in each geometry:
+      `1D <https://github.com/BLAST-WarpX/warpx/blob/development/Examples/Tests/load_density/inputs_test_1d_load_density_prepare.py>`__,
+      `2D <https://github.com/BLAST-WarpX/warpx/blob/development/Examples/Tests/load_density/inputs_test_2d_load_density_prepare.py>`__,
+      `3D <https://github.com/BLAST-WarpX/warpx/blob/development/Examples/Tests/load_density/inputs_test_3d_load_density_prepare.py>`__,
+      `RZ <https://github.com/BLAST-WarpX/warpx/blob/development/Examples/Tests/load_density/inputs_test_rz_load_density_prepare.py>`__
+      and
+      `RSPHERE <https://github.com/BLAST-WarpX/warpx/blob/development/Examples/Tests/load_density/inputs_test_rsphere_load_density_prepare.py>`__.
+      There is another optional parameter,
       ``<species_name>.read_density_distributed=true``, which controls how the
       openPMD data are distributed among processes. If it is set to false, the
       openPMD data are loaded and duplicated on every process. If it is set to
@@ -2176,12 +2181,14 @@ Particle initialization
         * If ``read_from_file``, ``temperature_in_eV`` is read as a scalar function of position
           from an openPMD file and converted to an isotropic vector
           :math:`u_\mathrm{std}` at the particle positions (requires a WarpX build with openPMD;
-          not supported yet in ``RZ`` / ``RCYLINDER`` / ``RSPHERE``). The following is required:
+          not supported yet in ``RZ`` / ``RCYLINDER``). The following is required:
           ``<species_name>.read_temperature_in_eV_from_path`` (openPMD file path). The file must
           contain a scalar openPMD mesh with the name given by
-          ``<species_name>.temperature_in_eV_mesh_name`` (default ``temperature_in_eV``). See
-          `this file <https://github.com/BLAST-WarpX/warpx/blob/development/Examples/Tests/initial_distribution/inputs_test_3d_initial_distribution_prepare.py>`__
-          for an example of how to prepare the openPMD data file.
+          ``<species_name>.temperature_in_eV_mesh_name`` (default ``temperature_in_eV``). See the
+          following files for examples of how to prepare the openPMD data file in each geometry:
+          `3D <https://github.com/BLAST-WarpX/warpx/blob/development/Examples/Tests/initial_distribution/inputs_test_3d_initial_distribution_prepare.py>`__
+          and
+          `RSPHERE <https://github.com/BLAST-WarpX/warpx/blob/development/Examples/Tests/initial_distribution/inputs_test_rsphere_initial_distribution_prepare.py>`__.
 
     * ``maxwell_juttner``: Maxwell-Juttner distribution for relativistic plasma.
       More specifically, the plasma is initialized with a Maxwell-Juttner distribution
@@ -2232,13 +2239,15 @@ Particle initialization
         * If ``parser``, the following is required:
           ``<species_name>.temperature_in_eV_function(x,y,z)``.
         * If ``read_from_file``, ``temperature_in_eV`` is read as a scalar function of position
-          from an openPMD file (requires a WarpX build with openPMD; not supported yet in ``RZ`` / ``RCYLINDER`` /
-          ``RSPHERE``). The following is required:
+          from an openPMD file (requires a WarpX build with openPMD; not supported yet in ``RZ`` /
+          ``RCYLINDER``). The following is required:
           ``<species_name>.read_temperature_in_eV_from_path`` (openPMD file path). The file must
           contain a scalar openPMD mesh with the name given by
-          ``<species_name>.temperature_in_eV_mesh_name`` (default ``temperature_in_eV``). See
-          `this file <https://github.com/BLAST-WarpX/warpx/blob/development/Examples/Tests/initial_distribution/inputs_test_3d_initial_distribution_prepare.py>`__
-          for an example of how to prepare the openPMD data file.
+          ``<species_name>.temperature_in_eV_mesh_name`` (default ``temperature_in_eV``). See the
+          following files for examples of how to prepare the openPMD data file in each geometry:
+          `3D <https://github.com/BLAST-WarpX/warpx/blob/development/Examples/Tests/initial_distribution/inputs_test_3d_initial_distribution_prepare.py>`__
+          and
+          `RSPHERE <https://github.com/BLAST-WarpX/warpx/blob/development/Examples/Tests/initial_distribution/inputs_test_rsphere_initial_distribution_prepare.py>`__.
 
       Sampling uses the Sobol and flipping methods described in :cite:t:`param-ZenitaniPOP2015`.
       For :math:`\theta \lesssim 0.1`, the Sobol method becomes inefficient (its acceptance
@@ -3355,6 +3364,9 @@ Details about the collision models can be found in the :ref:`theory section <mul
     If using two-product ``nuclearfusion`` with ``scattering_angle_model = legendre``, consider the reaction to be ordered as ``A + B -> C + D``, as described for :pp:param:`<collision_name>.species`.
     The first entry in ``product_species`` must be product ``C``, and the second must be product ``D``.
     For example, T(d,n)He4 corresponds to ``d + T -> n + He4``, so ``product_species`` must list the neutron first and helium4 second.
+    For two-product ``nuclearfusion`` reactions, the product macroparticles are created so that charge is conserved locally.
+    If each product has the same charge as one of the reactants (e.g. ``D + D -> T + p`` or ``D + He3 -> He4 + p``), one macroparticle is created per product, at the position of the reactant with the same charge.
+    Otherwise (e.g. ``D + T -> n + He4`` or ``D + D -> n + He3``), two macroparticles are created per product, one at the position of each reactant, each with half of the reaction weight.
 
 .. pp:param:: <collision_name>.ndt_supercycle
     :type: ``int``
@@ -4742,7 +4754,8 @@ Additional parameters
     memory, which is faster than the usual ``__global__``
     memory. Performance impact will depend on the relative overhead
     of assigning the particles to bins small enough to fit in the
-    space available for the temporary buffers.
+    space available for the temporary buffers. With CUDA and HIP, this
+    cannot be used with more than one azimuthal mode in RZ geometry.
 
 .. pp:param:: warpx.do_shared_mem_current_deposition
     :type: ``bool``
@@ -4760,9 +4773,9 @@ Additional parameters
     (e.g. for high particles per cell). We have observed this option to be faster
     on AMD GPUs such as the MI250X and MI300A for greater than ~4 particles per cell,
     but not neccesarily on NVIDIA hardware such as the A100. This feature is only available
-    for CUDA and HIP, and is only recommended for 3D or 2D. It supports the ``direct`` and
-    ``esirkepov`` values of :pp:param:`algo.current_deposition` with the explicit
-    particle push, and cannot be used with more than one azimuthal mode in RZ.
+    for CUDA and HIP, and is only recommended for 3D or 2D. It supports the ``direct``,
+    ``esirkepov`` and ``villasenor`` values of :pp:param:`algo.current_deposition` with the
+    explicit particle push, and cannot be used with more than one azimuthal mode in RZ.
 
 .. pp:param:: warpx.shared_tilesize
     :type: list of ``int``
