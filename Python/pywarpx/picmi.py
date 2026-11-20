@@ -2466,7 +2466,7 @@ class ElectrostaticSolver(picmistandard.PICMI_ElectrostaticSolver):
         default=None,
         gt=0,
         allow_inf_nan=False,
-        description="Normal Robin decay length in meters on sparse_lu open faces.",
+        description="Robin decay length in meters relative to the shared charge-free x-z background on matching open y faces in 3D.",
     )
     sparse_lu_open_reference_radius: float | None = Field(
         default=None,
@@ -2599,8 +2599,14 @@ class ElectrostaticSolver(picmistandard.PICMI_ElectrostaticSolver):
                 raise ValueError("decay_length requires method='sparse_lu'")
             if self.sparse_lu_open_reference_radius is not None:
                 raise ValueError("Specify either decay_length or sparse_lu_open_reference_radius")
-            if "open" not in (*self.grid.lower_boundary_conditions, *self.grid.upper_boundary_conditions):
-                raise ValueError("decay_length requires an open face")
+            if not isinstance(self.grid, Cartesian3DGrid) or any(
+                (bc == "open") != (axis == 1)
+                for boundaries in (
+                    self.grid.lower_boundary_conditions, self.grid.upper_boundary_conditions
+                )
+                for axis, bc in enumerate(boundaries)
+            ):
+                raise ValueError("decay_length requires paired open y faces only in 3D")
         if self.method != "sparse_lu":
             if self.sparse_lu_open_reference_radius is not None:
                 raise ValueError(
