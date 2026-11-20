@@ -187,23 +187,29 @@ void LabFrameExplicitES::ComputePhiSparseLU (
             rho.boxArray(), rho.DistributionMap(), 1, 0);
     }
     auto& linop = m_sparse_lu->linop();
+    SparseLUPoissonSolver::EBPotential eb_potential;
 #ifdef AMREX_USE_EB
     if (EB::enabled()) {
         auto const& bc = *m_poisson_boundary_handler;
         auto const time = warpx.gett_new(0);
         if (bc.phi_EB_only_t) {
-            linop.setEBDirichlet(bc.potential_eb_t(time));
+            auto const value = bc.potential_eb_t(time);
+            linop.setEBDirichlet(value);
+            eb_potential = [value](amrex::RealVect const&) { return value; };
         } else {
             // The pinned AMReX callable setter does not clear a previously set
             // scalar EB value. Select its spatial-potential storage explicitly.
             linop.setEBDirichlet(std::numeric_limits<amrex::Real>::lowest());
             linop.setEBDirichlet(bc.getPhiEB(time));
+            eb_potential = [potential = bc.getPhiEB(time)](amrex::RealVect const& p) {
+                return potential(AMREX_D_DECL(p[0], p[1], p[2]));
+            };
         }
     }
 #endif
     amrex::MultiFab::Copy(*m_sparse_lu_rhs, rho, 0, 0, 1, 0);
     m_sparse_lu_rhs->mult(-1._rt / PhysConst::epsilon_0);
-    m_sparse_lu->Solve(*m_sparse_lu_rhs, phi);
+    m_sparse_lu->Solve(*m_sparse_lu_rhs, phi, eb_potential);
     if (EB::enabled()) {
 #ifdef AMREX_USE_EB
         auto const& bc = *m_poisson_boundary_handler;

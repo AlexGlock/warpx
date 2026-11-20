@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -96,6 +97,8 @@ struct SparseLUPoissonSolver::Impl
         PetscInt m_row;
         std::array<amrex::IntVect, AMREX_SPACEDIM+1> m_nodes;
         std::array<amrex::Real, AMREX_SPACEDIM+1> m_weights;
+        std::array<amrex::Real, AMREX_SPACEDIM> m_cut_weights{};
+        std::array<amrex::RealVect, AMREX_SPACEDIM> m_cut_positions{};
     };
     std::vector<OpenRow> m_open_rows;
     SparseLUPoissonLinOp m_linop;
@@ -224,7 +227,7 @@ struct SparseLUPoissonSolver::Impl
         info.setMaxCoarseningLevel(0);
 #ifdef AMREX_USE_EB
         auto const* eb_factory = dynamic_cast<amrex::EBFArrayBoxFactory const*>(factory);
-        if (eb_factory) {
+        if (eb_factory && !robin) {
             // Radial differences use an uncut boundary cell layer. Do not apply
             // a regular-grid boundary equation through an embedded conductor.
             auto const& flags = eb_factory->getMultiEBCellFlagFab();
@@ -246,6 +249,8 @@ struct SparseLUPoissonSolver::Impl
             amrex::ParallelDescriptor::ReduceIntMin(clear);
             AMREX_ALWAYS_ASSERT_WITH_MESSAGE(clear,
                 "sparse_lu: the cell layer next to open faces must be free of EB");
+        }
+        if (eb_factory) {
             m_linop.define({geom}, {grids}, {dmap}, info, {eb_factory});
         } else
 #else
@@ -346,6 +351,55 @@ struct SparseLUPoissonSolver::Impl
                 }
             }
         }
+        // Cache the vacuum fraction of each inward edge ending on a conductor.
+        std::map<std::pair<PetscInt, int>, amrex::Real> cut_fractions;
+#ifdef AMREX_USE_EB
+        if (robin && eb_factory) {
+            auto const& flags = eb_factory->getMultiEBCellFlagFab();
+            auto const& centroids = eb_factory->getEdgeCent();
+            auto const& level_set = eb_factory->getLevelSet();
+            for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+                if (lo[d] != BoundaryType::Open && hi[d] != BoundaryType::Open) { continue; }
+                m_probe.setVal(0);
+                for (amrex::MFIter mfi(m_probe); mfi.isValid(); ++mfi) {
+                    auto const type = flags[mfi].getType();
+                    if (type == amrex::FabType::covered) { continue; }
+                    bool const cut = type != amrex::FabType::regular;
+                    auto const ec = cut ? centroids[d]->const_array(mfi) :
+                        amrex::Array4<amrex::Real const>{};
+                    auto const ls = level_set.const_array(mfi);
+                    auto const fraction = m_probe.array(mfi);
+                    for (int side = 0; side < 2; ++side) {
+                        if ((side ? hi[d] : lo[d]) != BoundaryType::Open) { continue; }
+                        auto face = domain;
+                        int const end = side ? domain.bigEnd(d) : domain.smallEnd(d);
+                        face.setSmall(d, end);
+                        face.setBig(d, end);
+                        amrex::ParallelFor(face & mfi.validbox(),
+                            [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+                                amrex::IntVect q(AMREX_D_DECL(i,j,k));
+                                auto inward = q;
+                                inward[d] += side ? -1 : 1;
+                                if (ls(q) < 0 && ls(inward) >= 0) {
+                                    auto const centroid = cut ? ec(side ? inward : q) : 1;
+                                    fraction(q) = std::abs(centroid) == 1 ? 1 :
+                                        1 - 2 * std::abs(centroid);
+                                }
+                            });
+                    }
+                }
+                Gather(m_probe);
+                if (amrex::ParallelDescriptor::MyProc() == 0) {
+                    auto const f = m_global[0].const_array();
+                    for (amrex::BoxIterator it(m_domain); it.ok(); ++it) {
+                        if (f(it()) > 0) {
+                            cut_fractions[{m_domain.index(it()), d}] = f(it());
+                        }
+                    }
+                }
+            }
+        }
+#endif
         if (amrex::ParallelDescriptor::MyProc() == 0 && n > 0) {
             for (amrex::BoxIterator it(m_domain); it.ok(); ++it) {
                 PetscInt const row = m_ids[m_domain.index(it())];
@@ -383,6 +437,19 @@ struct SparseLUPoissonSolver::Impl
                     if (r == amrex::Real(0)) { continue; }
                     amrex::Real const weight = std::abs(r)*geom.InvCellSize(d);
                     boundary_row.m_nodes[d+1][d] += r > 0 ? -1 : 1;
+                    auto const cut = cut_fractions.find({m_domain.index(it()), d});
+                    if (cut != cut_fractions.end()) {
+                        auto const w = weight / cut->second;
+                        boundary_row.m_weights[0] += w;
+                        boundary_row.m_cut_weights[d] = w;
+                        auto& pos = boundary_row.m_cut_positions[d];
+                        for (int axis = 0; axis < AMREX_SPACEDIM; ++axis) {
+                            pos[axis] = geom.ProbLo(axis) + geom.CellSize(axis) *
+                                (it()[axis] - geom.Domain().smallEnd(axis));
+                        }
+                        pos[d] += (r > 0 ? -1 : 1) * cut->second * geom.CellSize(d);
+                        continue;
+                    }
                     AMREX_ALWAYS_ASSERT(m_domain.contains(boundary_row.m_nodes[d+1]));
                     boundary_row.m_weights[d+1] = -weight;
                     boundary_row.m_weights[0] += weight;
@@ -463,7 +530,7 @@ struct SparseLUPoissonSolver::Impl
         }
     }
 
-    void Solve (amrex::MultiFab const& rhs, amrex::MultiFab& phi)
+    void Solve (amrex::MultiFab const& rhs, amrex::MultiFab& phi, EBPotential const& eb)
     {
         AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
             phi.boxArray() == m_active.boxArray() &&
@@ -493,6 +560,12 @@ struct SparseLUPoissonSolver::Impl
                 auto const lift = m_global[0].const_array();
                 for (auto const& row : m_open_rows) {
                     amrex::Real value = 0;
+                    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+                        if (row.m_cut_weights[d] > 0) {
+                            AMREX_ALWAYS_ASSERT_WITH_MESSAGE(eb, "Robin cut edge needs EB potential");
+                            value += row.m_cut_weights[d] * eb(row.m_cut_positions[d]);
+                        }
+                    }
                     for (int s = 0; s <= AMREX_SPACEDIM; ++s) {
                         value -= row.m_weights[s] * lift(row.m_nodes[s]);
                     }
@@ -560,10 +633,11 @@ SparseLUPoissonLinOp& SparseLUPoissonSolver::linop ()
     return m_impl->m_linop;
 }
 
-void SparseLUPoissonSolver::Solve (amrex::MultiFab const& rhs, amrex::MultiFab& phi)
+void SparseLUPoissonSolver::Solve (amrex::MultiFab const& rhs, amrex::MultiFab& phi,
+                                   EBPotential const& eb)
 {
     BL_PROFILE("SparseLUPoissonSolver::Solve");
-    m_impl->Solve(rhs, phi);
+    m_impl->Solve(rhs, phi, eb);
 }
 
 #endif
