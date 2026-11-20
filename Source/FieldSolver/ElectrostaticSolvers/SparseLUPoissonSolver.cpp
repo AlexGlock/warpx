@@ -12,6 +12,7 @@
 #include <AMReX_Gpu.H>
 #include <AMReX_MFIter.H>
 #include <AMReX_ParallelDescriptor.H>
+#include <AMReX_ParmParse.H>
 #include <AMReX_Print.H>
 
 #include <petscksp.h>
@@ -179,7 +180,12 @@ struct SparseLUPoissonSolver::Impl
             lobc[d] = convert(lo[d]);
             hibc[d] = convert(hi[d]);
         }
-        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!has_open || !geom.isAnyPeriodic(),
+        amrex::Real decay_length = 0;
+        bool const robin = amrex::ParmParse("warpx").query("decay_length", decay_length);
+        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!robin || (std::isfinite(decay_length) &&
+            decay_length > 0 && has_open && open_reference_radius == 0),
+            "warpx.decay_length requires a finite positive length, open faces and no radial radius");
+        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(robin || !has_open || !geom.isAnyPeriodic(),
             "sparse_lu: radial open boundaries cannot be combined with periodic boundaries");
 #if AMREX_SPACEDIM == 1
         AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!has_open || reference_face >= 0,
@@ -193,7 +199,7 @@ struct SparseLUPoissonSolver::Impl
         }
         // All-open 3D uses monopole decay. In 2D the monopole is logarithmic:
         // phi = A log(Rref/r), with A determined by charge, including induced EB charge.
-        m_open_logarithmic = has_open && reference_face < 0 && AMREX_SPACEDIM == 2;
+        m_open_logarithmic = !robin && has_open && reference_face < 0 && AMREX_SPACEDIM == 2;
         if (m_open_logarithmic) {
             amrex::Real radius_squared = 0;
             for (int d = 0; d < AMREX_SPACEDIM; ++d) {
@@ -346,7 +352,7 @@ struct SparseLUPoissonSolver::Impl
                 if (row < 0 || !IsOpenNode(it())) { continue; }
                 OpenRow boundary_row{row, {}, {}};
                 boundary_row.m_nodes.fill(it());
-                boundary_row.m_weights[0] = m_open_decay_power;
+                boundary_row.m_weights[0] = robin ? 0 : m_open_decay_power;
                 if (m_open_logarithmic) {
                     amrex::Real r2 = 0;
                     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
@@ -362,8 +368,18 @@ struct SparseLUPoissonSolver::Impl
                 // In 2D/3D, beta > 0 makes the row strictly diagonally dominant.
                 // The beta=0 closure in 1D is anchored by its Dirichlet wall.
                 for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-                    amrex::Real const r = geom.ProbLo(d) +
+                    amrex::Real r = geom.ProbLo(d) +
                         (it()[d]-geom.Domain().smallEnd(d))*geom.CellSize(d) - m_open_center[d];
+                    if (robin) {
+                        bool const lo_open = m_lo[d] == BoundaryType::Open &&
+                            it()[d] == m_domain.smallEnd(d);
+                        bool const hi_open = m_hi[d] == BoundaryType::Open &&
+                            it()[d] == m_domain.bigEnd(d);
+                        if (!lo_open && !hi_open) { continue; }
+                        // Sum phi + R*dphi/dn = 0 over incident open faces at edges.
+                        r = lo_open ? -decay_length : decay_length;
+                        boundary_row.m_weights[0] += 1;
+                    }
                     if (r == amrex::Real(0)) { continue; }
                     amrex::Real const weight = std::abs(r)*geom.InvCellSize(d);
                     boundary_row.m_nodes[d+1][d] += r > 0 ? -1 : 1;
@@ -430,7 +446,10 @@ struct SparseLUPoissonSolver::Impl
             if (verbosity > 0) {
                 amrex::Print() << "sparse_lu: cached MUMPS factorization of " << n
                                << " free nodes (" << nentries << " matrix entries)\n";
-                if (has_open) {
+                if (robin) {
+                    amrex::Print() << "sparse_lu: normal Robin decay length = "
+                                   << decay_length << '\n';
+                } else if (has_open) {
                     amrex::Print() << "sparse_lu: radial open center =";
                     for (auto x : m_open_center) { amrex::Print() << " " << x; }
                     if (m_open_logarithmic) {

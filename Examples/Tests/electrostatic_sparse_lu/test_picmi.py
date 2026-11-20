@@ -237,5 +237,14 @@ expect_invalid(
     warpx_sparse_lu_open_reference_radius=10.0,
 )
 # A subsequent non-open solver must clear the previous solver's radius input.
+mixed = ["dirichlet", "open", "periodic"]
+solver = picmi.ElectrostaticSolver(
+    grid=grid(3, lower_boundary_conditions=mixed, upper_boundary_conditions=mixed),
+    method="sparse_lu",
+    warpx_decay_length=0.001,
+)
+solver.solver_initialize_inputs()
+assert pywarpx.warpx.decay_length == 0.001
 picmi.ElectrostaticSolver(grid=grid(2)).solver_initialize_inputs()
+assert pywarpx.warpx.decay_length is None
 assert pywarpx.warpx.sparse_lu_open_reference_radius is None

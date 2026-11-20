@@ -2462,6 +2462,12 @@ class ElectrostaticSolver(picmistandard.PICMI_ElectrostaticSolver):
         default=None,
         description="Poisson solver method. 'sparse_lu' uses a cached PETSc/MUMPS LU factorization on a single uniform Cartesian level.",
     )
+    decay_length: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        description="Normal Robin decay length in meters on sparse_lu open faces.",
+    )
     sparse_lu_open_reference_radius: float | None = Field(
         default=None,
         gt=0,
@@ -2588,6 +2594,13 @@ class ElectrostaticSolver(picmistandard.PICMI_ElectrostaticSolver):
 
     @model_validator(mode="after")
     def _check_sparse_lu(self) -> Self:
+        if self.decay_length is not None:
+            if self.method != "sparse_lu":
+                raise ValueError("decay_length requires method='sparse_lu'")
+            if self.sparse_lu_open_reference_radius is not None:
+                raise ValueError("Specify either decay_length or sparse_lu_open_reference_radius")
+            if "open" not in (*self.grid.lower_boundary_conditions, *self.grid.upper_boundary_conditions):
+                raise ValueError("decay_length requires an open face")
         if self.method != "sparse_lu":
             if self.sparse_lu_open_reference_radius is not None:
                 raise ValueError(
@@ -2620,7 +2633,7 @@ class ElectrostaticSolver(picmistandard.PICMI_ElectrostaticSolver):
         for lo, hi in pairs:
             if (lo == "periodic") != (hi == "periodic"):
                 raise ValueError("sparse_lu requires paired periodic boundaries")
-        if any("open" in pair for pair in pairs) and any(
+        if self.decay_length is None and any("open" in pair for pair in pairs) and any(
             "periodic" in pair for pair in pairs
         ):
             raise ValueError(
@@ -2663,6 +2676,7 @@ class ElectrostaticSolver(picmistandard.PICMI_ElectrostaticSolver):
             and all(bc == "open" for bc in self.grid.lower_boundary_conditions)
             and all(bc == "open" for bc in self.grid.upper_boundary_conditions)
             and radius is None
+            and self.decay_length is None
         ):
             radius = float(
                 3
@@ -2672,6 +2686,7 @@ class ElectrostaticSolver(picmistandard.PICMI_ElectrostaticSolver):
                 )
             )
         pywarpx.warpx.sparse_lu_open_reference_radius = radius
+        pywarpx.warpx.decay_length = self.decay_length
 
         # set adaptive timestepping parameters
         pywarpx.warpx.cfl = self.cfl
