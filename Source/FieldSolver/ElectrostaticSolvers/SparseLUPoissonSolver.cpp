@@ -112,7 +112,9 @@ struct SparseLUPoissonSolver::Impl
     std::map<PetscInt, PetscInt> m_face_ids;
     KSP m_face_solver = nullptr;
     Vec m_face_rhs = nullptr, m_background = nullptr;
-    std::vector<PetscScalar> m_previous_face_rhs;
+    std::vector<PetscScalar> m_open_rhs;
+    bool m_fixed_robin = false;
+    bool m_robin_rhs_ready = false;
     SparseLUPoissonLinOp m_linop;
     amrex::MultiFab m_active, m_probe, m_applied, m_rhs, m_lift, m_global;
     std::vector<PetscInt> m_ids;
@@ -261,14 +263,11 @@ struct SparseLUPoissonSolver::Impl
                 "Robin faces have different prescribed potentials");
             rhs[term.row] += term.weight * lo;
         }
-        if (rhs != m_previous_face_rhs) {
-            PetscScalar* b;
-            checkPetsc(VecGetArray(m_face_rhs, &b));
-            std::copy(rhs.begin(), rhs.end(), b);
-            checkPetsc(VecRestoreArray(m_face_rhs, &b));
-            checkPetsc(KSPSolve(m_face_solver, m_face_rhs, m_background));
-            m_previous_face_rhs = std::move(rhs);
-        }
+        PetscScalar* b;
+        checkPetsc(VecGetArray(m_face_rhs, &b));
+        std::copy(rhs.begin(), rhs.end(), b);
+        checkPetsc(VecRestoreArray(m_face_rhs, &b));
+        checkPetsc(KSPSolve(m_face_solver, m_face_rhs, m_background));
     }
 
     ~Impl ()
@@ -325,6 +324,7 @@ struct SparseLUPoissonSolver::Impl
         }
         amrex::Real decay_length = 0;
         bool const robin = amrex::ParmParse("warpx").query("decay_length", decay_length);
+        m_fixed_robin = robin;
         if (robin) {
             AMREX_ALWAYS_ASSERT_WITH_MESSAGE(AMREX_SPACEDIM == 3 &&
                 lo[1] == BoundaryType::Open && hi[1] == BoundaryType::Open &&
@@ -728,15 +728,16 @@ struct SparseLUPoissonSolver::Impl
                     l(i,j,k) = (a(i,j,k) == amrex::Real(0)) ? p(i,j,k) : amrex::Real(0);
                 });
         }
-        std::vector<PetscScalar> open_rhs;
         // Gather collectively even on ranks that own no open rows.
         bool has_open = false;
         for (int d = 0; d < AMREX_SPACEDIM; ++d) {
             has_open |= m_lo[d] == BoundaryType::Open || m_hi[d] == BoundaryType::Open;
         }
-        if (has_open) {
+        if (has_open && !m_robin_rhs_ready) {
             Gather(m_lift);
             if (amrex::ParallelDescriptor::MyProc() == 0) {
+                m_open_rhs.clear();
+                m_open_rhs.reserve(m_open_rows.size());
                 auto const lift = m_global[0].const_array();
                 PetscScalar const* background = nullptr;
                 if (m_face_solver) {
@@ -755,10 +756,12 @@ struct SparseLUPoissonSolver::Impl
                     for (int s = 0; s <= AMREX_SPACEDIM; ++s) {
                         value -= row.m_weights[s] * lift(row.m_nodes[s]);
                     }
-                    open_rhs.push_back(static_cast<PetscScalar>(value));
+                    m_open_rhs.push_back(static_cast<PetscScalar>(value));
                 }
                 if (background) { checkPetsc(VecRestoreArrayRead(m_background, &background)); }
             }
+            // All ranks must skip the collective lift gather on subsequent Robin solves.
+            m_robin_rhs_ready = m_fixed_robin;
         }
         amrex::MultiFab::Copy(m_rhs, rhs, 0, 0, 1, 0);
         m_rhs.OverrideSync(m_geom.periodicity());
@@ -778,7 +781,7 @@ struct SparseLUPoissonSolver::Impl
                     if (row >= 0) { b[row] = static_cast<PetscScalar>(a(it())); }
                 }
                 for (std::size_t i = 0; i < m_open_rows.size(); ++i) {
-                    b[m_open_rows[i].m_row] = open_rhs[i];
+                    b[m_open_rows[i].m_row] = m_open_rhs[i];
                 }
                 checkPetsc(VecRestoreArray(m_b, &b));
                 checkPetsc(KSPSolve(m_ksp, m_b, m_x));

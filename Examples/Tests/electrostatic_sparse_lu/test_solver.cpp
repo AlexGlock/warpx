@@ -322,23 +322,24 @@ namespace
         Real analytic_error = 0;
         for (int step = 1; step <= 2; ++step) {
 #ifdef AMREX_USE_EB
-            if (with_eb) { direct.linop().setEBDirichlet(Real(step)); }
+            if (with_eb) { direct.linop().setEBDirichlet(robin ? Real(1) : Real(step)); }
 #endif
             phi.setVal(Real(step)); // Nonzero prescribed wall values exercise lifting.
             rhs.setVal(with_eb ? Real(0) : Real(-step));
             if (robin) {
                 // On this two-cell mesh the inward edge from either y-face
                 // center hits the sphere after 0.3 m. R = 0.6 m. The
-                // charge-free section has the harmonic solution step*(1+x).
+                // charge-free section has the fixed harmonic solution 1+x.
                 for (amrex::MFIter mfi(phi); mfi.isValid(); ++mfi) {
                     auto const p = phi.array(mfi);
                     amrex::ParallelFor(mfi.validbox(),
                         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-                            p(i,j,k) = step * (1 + Real(0.5)*i);
+                            p(i,j,k) = 1 + Real(0.5)*i;
                         });
                 }
                 direct.Solve(rhs, phi, [step](amrex::RealVect const& p) {
-                    return step * (1 + p[1]);
+                    AMREX_ALWAYS_ASSERT(step == 1); // Cached cut-edge RHS on the second solve.
+                    return 1 + p[1];
                 });
                 error.setVal(0);
                 for (amrex::MFIter mfi(phi); mfi.isValid(); ++mfi) {
@@ -349,7 +350,7 @@ namespace
                             if ((j == 0 || j == 2) && i == 1 && k == 1) {
                                 Real const ycut = j == 0 ? Real(0.3) : Real(0.7);
                                 e(i,j,k) = p(i,j,k) -
-                                    step * (Real(1.5)/3 + Real(2)/3 * (1 + ycut));
+                                    (Real(1.5)/3 + Real(2)/3 * (1 + ycut));
                             }
                         });
                 }

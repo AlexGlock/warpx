@@ -2466,7 +2466,7 @@ class ElectrostaticSolver(picmistandard.PICMI_ElectrostaticSolver):
         default=None,
         gt=0,
         allow_inf_nan=False,
-        description="Robin decay length in meters relative to the shared charge-free x-z background on matching open y faces in 3D.",
+        description="Robin decay length in meters relative to the shared charge-free x-z background on matching open y faces in 3D. Requires fixed geometry and fixed domain and embedded-electrode potentials throughout the run.",
     )
     sparse_lu_open_reference_radius: float | None = Field(
         default=None,
