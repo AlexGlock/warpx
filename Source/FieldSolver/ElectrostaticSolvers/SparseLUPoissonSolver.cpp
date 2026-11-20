@@ -101,6 +101,18 @@ struct SparseLUPoissonSolver::Impl
         std::array<amrex::RealVect, AMREX_SPACEDIM> m_cut_positions{};
     };
     std::vector<OpenRow> m_open_rows;
+    struct FaceValue {
+        PetscInt row;
+        amrex::IntVect low, high;
+        amrex::Real weight;
+        bool embedded;
+        amrex::RealVect offset;
+    };
+    std::vector<FaceValue> m_face_values;
+    std::map<PetscInt, PetscInt> m_face_ids;
+    KSP m_face_solver = nullptr;
+    Vec m_face_rhs = nullptr, m_background = nullptr;
+    std::vector<PetscScalar> m_previous_face_rhs;
     SparseLUPoissonLinOp m_linop;
     amrex::MultiFab m_active, m_probe, m_applied, m_rhs, m_lift, m_global;
     std::vector<PetscInt> m_ids;
@@ -134,8 +146,136 @@ struct SparseLUPoissonSolver::Impl
         return m_domain.contains(q);
     }
 
+    void DefineBackground (std::map<PetscInt, std::array<amrex::Real, 4>> const& geometry)
+    {
+#ifdef WARPX_DIM_3D
+        using amrex::Real;
+        auto section = m_domain;
+        section.setBig(1, section.smallEnd(1));
+        auto opposite = [&](amrex::IntVect q) {
+            q[1] = m_domain.bigEnd(1);
+            return q;
+        };
+        auto id = [&](amrex::IntVect q) { return m_ids[m_domain.index(q)]; };
+        auto embedded = [&](amrex::IntVect q) {
+            return !geometry.empty() && geometry.at(m_domain.index(q))[3] >= 0;
+        };
+        PetscInt count = 0;
+        for (amrex::BoxIterator it(section); it.ok(); ++it) {
+            auto const q = it();
+            auto const hi = opposite(q);
+            AMREX_ALWAYS_ASSERT_WITH_MESSAGE((id(q) < 0) == (id(hi) < 0) &&
+                embedded(q) == embedded(hi), "Robin faces have different electrode footprints");
+            if (id(q) >= 0) {
+                m_face_ids[id(q)] = count;
+                m_face_ids[id(hi)] = count++;
+            }
+        }
+        if (count == 0) { return; }
+        Mat matrix;
+        checkPetsc(MatCreateSeqAIJ(PETSC_COMM_SELF, count, count,
+                                   std::min<PetscInt>(count, 5), nullptr, &matrix));
+        for (amrex::BoxIterator it(section); it.ok(); ++it) {
+            auto const q = it();
+            if (id(q) < 0) { continue; }
+            auto const row = m_face_ids.at(id(q));
+            for (int d : {0, 2}) {
+                std::array<amrex::IntVect, 2> neighbor{q, q};
+                std::array<Real, 2> distance{};
+                for (int s = 0; s < 2; ++s) {
+                    auto& p = neighbor[s];
+                    p[d] += s ? 1 : -1;
+                    AMREX_ALWAYS_ASSERT(Wrap(p));
+                    Real fraction = 1;
+                    if (embedded(p)) {
+                        auto const edge = s ? q : p;
+                        auto length = [&](amrex::IntVect e) {
+                            Real const c = geometry.at(m_domain.index(e))[d];
+                            return std::abs(c) == 1 ? Real(1) : 1 - 2*std::abs(c);
+                        };
+                        fraction = length(edge);
+                        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(fraction > 0 &&
+                            std::abs(fraction-length(opposite(edge))) <
+                            128*std::numeric_limits<Real>::epsilon(),
+                            "Robin faces have different cut edges");
+                    }
+                    distance[s] = fraction*m_geom.CellSize(d);
+                }
+                // Nonuniform three-point second derivative at a cut edge.
+                for (int s = 0; s < 2; ++s) {
+                    Real const w = 2 / ((distance[0]+distance[1])*distance[s]);
+                    checkPetsc(MatSetValue(matrix, row, row, w, ADD_VALUES));
+                    auto const p = neighbor[s];
+                    if (id(p) >= 0) {
+                        checkPetsc(MatSetValue(matrix, row, m_face_ids.at(id(p)), -w, ADD_VALUES));
+                    } else {
+                        bool const cut = embedded(p);
+                        amrex::RealVect offset(0.0);
+                        if (cut) { offset[d] = s ? distance[s] : -distance[s]; }
+                        auto const base = cut ? q : p;
+                        m_face_values.push_back({row, base, opposite(base), w, cut, offset});
+                    }
+                }
+            }
+        }
+        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!m_face_values.empty(),
+            "Robin cross-section requires a fixed-potential wall or embedded electrode");
+        checkPetsc(MatAssemblyBegin(matrix, MAT_FINAL_ASSEMBLY));
+        checkPetsc(MatAssemblyEnd(matrix, MAT_FINAL_ASSEMBLY));
+        checkPetsc(MatCreateVecs(matrix, &m_background, &m_face_rhs));
+        checkPetsc(KSPCreate(PETSC_COMM_SELF, &m_face_solver));
+        checkPetsc(KSPSetOperators(m_face_solver, matrix, matrix));
+        checkPetsc(KSPSetType(m_face_solver, KSPPREONLY));
+        PC pc;
+        checkPetsc(KSPGetPC(m_face_solver, &pc));
+        checkPetsc(PCSetType(pc, PCLU));
+        checkPetsc(PCFactorSetMatSolverType(pc, MATSOLVERMUMPS));
+        checkPetsc(KSPSetErrorIfNotConverged(m_face_solver, PETSC_TRUE));
+        checkPetsc(MatDestroy(&matrix));
+#else
+        amrex::ignore_unused(geometry);
+#endif
+    }
+
+    void UpdateBackground (amrex::Array4<amrex::Real const> lift, EBPotential const& eb)
+    {
+        PetscInt count;
+        checkPetsc(VecGetSize(m_face_rhs, &count));
+        std::vector<PetscScalar> rhs(count, 0);
+        for (auto const& term : m_face_values) {
+            auto value = [&](amrex::IntVect q) {
+                if (!term.embedded) { return lift(q); }
+                AMREX_ALWAYS_ASSERT(eb);
+                auto pos = term.offset;
+                for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+                    pos[d] += m_geom.ProbLo(d) +
+                        (q[d]-m_geom.Domain().smallEnd(d))*m_geom.CellSize(d);
+                }
+                return eb(pos);
+            };
+            auto const lo = value(term.low);
+            auto const hi = value(term.high);
+            AMREX_ALWAYS_ASSERT_WITH_MESSAGE(std::abs(lo-hi) <=
+                128*std::numeric_limits<amrex::Real>::epsilon()*
+                std::max({amrex::Real(1), std::abs(lo), std::abs(hi)}),
+                "Robin faces have different prescribed potentials");
+            rhs[term.row] += term.weight * lo;
+        }
+        if (rhs != m_previous_face_rhs) {
+            PetscScalar* b;
+            checkPetsc(VecGetArray(m_face_rhs, &b));
+            std::copy(rhs.begin(), rhs.end(), b);
+            checkPetsc(VecRestoreArray(m_face_rhs, &b));
+            checkPetsc(KSPSolve(m_face_solver, m_face_rhs, m_background));
+            m_previous_face_rhs = std::move(rhs);
+        }
+    }
+
     ~Impl ()
     {
+        if (m_face_solver) { checkPetsc(KSPDestroy(&m_face_solver)); }
+        if (m_face_rhs) { checkPetsc(VecDestroy(&m_face_rhs)); }
+        if (m_background) { checkPetsc(VecDestroy(&m_background)); }
         // These are null on non-root ranks and for a domain with no free nodes.
         if (m_ksp) { checkPetsc(KSPDestroy(&m_ksp)); }
         if (m_b) { checkPetsc(VecDestroy(&m_b)); }
@@ -185,6 +325,13 @@ struct SparseLUPoissonSolver::Impl
         }
         amrex::Real decay_length = 0;
         bool const robin = amrex::ParmParse("warpx").query("decay_length", decay_length);
+        if (robin) {
+            AMREX_ALWAYS_ASSERT_WITH_MESSAGE(AMREX_SPACEDIM == 3 &&
+                lo[1] == BoundaryType::Open && hi[1] == BoundaryType::Open &&
+                std::count(lo.begin(), lo.end(), BoundaryType::Open) == 1 &&
+                std::count(hi.begin(), hi.end(), BoundaryType::Open) == 1,
+                "warpx.decay_length requires paired open y faces only in Cartesian 3D");
+        }
         AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!robin || (std::isfinite(decay_length) &&
             decay_length > 0 && has_open && open_reference_radius == 0),
             "warpx.decay_length requires a finite positive length, open faces and no radial radius");
@@ -352,6 +499,38 @@ struct SparseLUPoissonSolver::Impl
             }
         }
         // Cache the vacuum fraction of each inward edge ending on a conductor.
+        // Tangential edge centroids and level-set signs on the two y faces.
+        std::map<PetscInt, std::array<amrex::Real, 4>> face_geometry;
+#if defined(WARPX_DIM_3D) && defined(AMREX_USE_EB)
+        if (robin && eb_factory) {
+            Gather(eb_factory->getLevelSet());
+            auto save_face = [&](int component) {
+                if (amrex::ParallelDescriptor::MyProc() != 0) { return; }
+                auto const a = m_global[0].const_array();
+                for (amrex::BoxIterator it(domain); it.ok(); ++it) {
+                    if (IsOpenNode(it())) {
+                        face_geometry[domain.index(it())][component] = a(it());
+                    }
+                }
+            };
+            save_face(3);
+            for (int d : {0, 2}) {
+                auto const& edges = *eb_factory->getEdgeCent()[d];
+                m_probe.setVal(1);
+                for (amrex::MFIter mfi(m_probe); mfi.isValid(); ++mfi) {
+                    if (!edges.ok(mfi)) { continue; }
+                    auto const ec = edges.const_array(mfi);
+                    auto const a = m_probe.array(mfi);
+                    amrex::ParallelFor(mfi.validbox(),
+                        [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+                            if (ec.contains(i,j,k)) { a(i,j,k) = ec(i,j,k); }
+                        });
+                }
+                Gather(m_probe);
+                save_face(d);
+            }
+        }
+#endif
         std::map<std::pair<PetscInt, int>, amrex::Real> cut_fractions;
 #ifdef AMREX_USE_EB
         if (robin && eb_factory) {
@@ -401,6 +580,7 @@ struct SparseLUPoissonSolver::Impl
         }
 #endif
         if (amrex::ParallelDescriptor::MyProc() == 0 && n > 0) {
+            if (robin) { DefineBackground(face_geometry); }
             for (amrex::BoxIterator it(m_domain); it.ok(); ++it) {
                 PetscInt const row = m_ids[m_domain.index(it())];
                 if (row < 0 || !IsOpenNode(it())) { continue; }
@@ -558,8 +738,14 @@ struct SparseLUPoissonSolver::Impl
             Gather(m_lift);
             if (amrex::ParallelDescriptor::MyProc() == 0) {
                 auto const lift = m_global[0].const_array();
+                PetscScalar const* background = nullptr;
+                if (m_face_solver) {
+                    UpdateBackground(lift, eb);
+                    checkPetsc(VecGetArrayRead(m_background, &background));
+                }
                 for (auto const& row : m_open_rows) {
-                    amrex::Real value = 0;
+                    amrex::Real value = background ?
+                        PetscRealPart(background[m_face_ids.at(row.m_row)]) : 0;
                     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
                         if (row.m_cut_weights[d] > 0) {
                             AMREX_ALWAYS_ASSERT_WITH_MESSAGE(eb, "Robin cut edge needs EB potential");
@@ -571,6 +757,7 @@ struct SparseLUPoissonSolver::Impl
                     }
                     open_rhs.push_back(static_cast<PetscScalar>(value));
                 }
+                if (background) { checkPetsc(VecRestoreArrayRead(m_background, &background)); }
             }
         }
         amrex::MultiFab::Copy(m_rhs, rhs, 0, 0, 1, 0);

@@ -270,6 +270,11 @@ namespace
         lo.fill(BC::Open);
         hi.fill(BC::Open);
         if (wall >= 0) { (wall % 2 == 0 ? lo : hi)[wall/2] = BC::Dirichlet; }
+        if (robin) {
+            lo.fill(BC::Dirichlet);
+            hi.fill(BC::Dirichlet);
+            lo[1] = hi[1] = BC::Open;
+        }
         amrex::IntVect const origin = with_eb ? amrex::IntVect(0) :
             amrex::IntVect(AMREX_D_DECL(2,-3,4));
         amrex::Box domain(origin, origin + amrex::IntVect(n-1));
@@ -322,10 +327,18 @@ namespace
             phi.setVal(Real(step)); // Nonzero prescribed wall values exercise lifting.
             rhs.setVal(with_eb ? Real(0) : Real(-step));
             if (robin) {
-                // On this two-cell mesh the inward edge from either x-face
-                // center hits the sphere after 0.3 m. R = 0.6 m.
+                // On this two-cell mesh the inward edge from either y-face
+                // center hits the sphere after 0.3 m. R = 0.6 m. The
+                // charge-free section has the harmonic solution step*(1+x).
+                for (amrex::MFIter mfi(phi); mfi.isValid(); ++mfi) {
+                    auto const p = phi.array(mfi);
+                    amrex::ParallelFor(mfi.validbox(),
+                        [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+                            p(i,j,k) = step * (1 + Real(0.5)*i);
+                        });
+                }
                 direct.Solve(rhs, phi, [step](amrex::RealVect const& p) {
-                    return step * (1 + p[0]);
+                    return step * (1 + p[1]);
                 });
                 error.setVal(0);
                 for (amrex::MFIter mfi(phi); mfi.isValid(); ++mfi) {
@@ -333,9 +346,10 @@ namespace
                     auto const e = error.array(mfi);
                     amrex::ParallelFor(mfi.validbox(),
                         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-                            if ((i == 0 || i == 2) && j == 1 && (AMREX_SPACEDIM == 2 || k == 1)) {
-                                Real const xcut = i == 0 ? Real(0.3) : Real(0.7);
-                                e(i,j,k) = p(i,j,k) - Real(2)/3 * step * (1 + xcut);
+                            if ((j == 0 || j == 2) && i == 1 && k == 1) {
+                                Real const ycut = j == 0 ? Real(0.3) : Real(0.7);
+                                e(i,j,k) = p(i,j,k) -
+                                    step * (Real(1.5)/3 + Real(2)/3 * (1 + ycut));
                             }
                         });
                 }
@@ -454,9 +468,11 @@ int main (int argc, char* argv[])
         auto const fine = test_radial(24, -1, true);
         AMREX_ALWAYS_ASSERT_WITH_MESSAGE(fine < coarse && fine < amrex::Real(0.1),
             "radial sphere/cylinder potential failed to converge to the exterior solution");
+#if AMREX_SPACEDIM == 3
         amrex::ParmParse("warpx").add("decay_length", amrex::Real(0.6));
         test_radial(2, -1, true, 0, true);
         amrex::ParmParse("warpx").remove("decay_length");
+#endif
 #endif
     }
     if (external_petsc) {
