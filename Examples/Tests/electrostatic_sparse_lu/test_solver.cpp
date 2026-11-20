@@ -262,7 +262,7 @@ namespace
     // walls, and linearity across solves that share the cached factorization.
     // An all-open sphere/cylinder also has a known exterior potential.
     amrex::Real test_radial (int n, int wall, bool with_eb,
-                            amrex::Real reference_radius = 0)
+                            amrex::Real reference_radius = 0, bool robin = false)
     {
         using amrex::Real;
         using BC = SparseLUPoissonSolver::BoundaryType;
@@ -321,6 +321,27 @@ namespace
 #endif
             phi.setVal(Real(step)); // Nonzero prescribed wall values exercise lifting.
             rhs.setVal(with_eb ? Real(0) : Real(-step));
+            if (robin) {
+                // On this two-cell mesh the inward edge from either x-face
+                // center hits the sphere after 0.3 m. R = 0.6 m.
+                direct.Solve(rhs, phi, [step](amrex::RealVect const& p) {
+                    return step * (1 + p[0]);
+                });
+                error.setVal(0);
+                for (amrex::MFIter mfi(phi); mfi.isValid(); ++mfi) {
+                    auto const p = phi.const_array(mfi);
+                    auto const e = error.array(mfi);
+                    amrex::ParallelFor(mfi.validbox(),
+                        [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+                            if ((i == 0 || i == 2) && j == 1 && (AMREX_SPACEDIM == 2 || k == 1)) {
+                                Real const xcut = i == 0 ? Real(0.3) : Real(0.7);
+                                e(i,j,k) = p(i,j,k) - Real(2)/3 * step * (1 + xcut);
+                            }
+                        });
+                }
+                AMREX_ALWAYS_ASSERT(error.norm0() < tolerance);
+                continue;
+            }
             direct.Solve(rhs, phi);
             AMREX_ALWAYS_ASSERT(rhs.min(0) == (with_eb ? Real(0) : Real(-step)));
             AMREX_ALWAYS_ASSERT(rhs.max(0) == (with_eb ? Real(0) : Real(-step)));
@@ -433,6 +454,9 @@ int main (int argc, char* argv[])
         auto const fine = test_radial(24, -1, true);
         AMREX_ALWAYS_ASSERT_WITH_MESSAGE(fine < coarse && fine < amrex::Real(0.1),
             "radial sphere/cylinder potential failed to converge to the exterior solution");
+        amrex::ParmParse("warpx").add("decay_length", amrex::Real(0.6));
+        test_radial(2, -1, true, 0, true);
+        amrex::ParmParse("warpx").remove("decay_length");
 #endif
     }
     if (external_petsc) {

@@ -12,6 +12,7 @@ using SparseLUPoissonLinOp = amrex::MLNodeLaplacian;
 using SparseLUPoissonLinOp = amrex::MLEBNodeFDLaplacian;
 #endif
 
+#include <functional>
 #include <memory>
 
 /** Single-level Cartesian 1D/2D/3D Poisson solve with cached PETSc/MUMPS LU.
@@ -49,7 +50,9 @@ public:
      * wall (coordinate order, low before high), or the domain center if all open.
      * All-open 2D uses a zero-potential reference radius, defaulting to three
      * times the domain diagonal when open_reference_radius is zero. */
-    void Solve (amrex::MultiFab const& rhs, amrex::MultiFab& phi);
+    using EBPotential = std::function<amrex::Real(amrex::RealVect const&)>;
+    void Solve (amrex::MultiFab const& rhs, amrex::MultiFab& phi,
+                EBPotential const& eb_potential = {});
 
 private:
     struct Impl;
