@@ -11,6 +11,7 @@
 #include <AMReX_BoxIterator.H>
 #include <AMReX_Gpu.H>
 #include <AMReX_MFIter.H>
+#include <AMReX_Math.H>
 #include <AMReX_ParallelDescriptor.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_Print.H>
@@ -332,7 +333,7 @@ struct SparseLUPoissonSolver::Impl
                 std::count(hi.begin(), hi.end(), BoundaryType::Open) == 1,
                 "warpx.decay_length requires paired open y faces only in Cartesian 3D");
         }
-        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!robin || (std::isfinite(decay_length) &&
+        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!robin || (amrex::Math::isfinite(decay_length) &&
             decay_length > 0 && has_open && open_reference_radius == 0),
             "warpx.decay_length requires a finite positive length, open faces and no radial radius");
         AMREX_ALWAYS_ASSERT_WITH_MESSAGE(robin || !has_open || !geom.isAnyPeriodic(),
@@ -358,7 +359,7 @@ struct SparseLUPoissonSolver::Impl
             if (m_open_reference_radius == amrex::Real(0)) {
                 m_open_reference_radius = 6 * std::sqrt(radius_squared);
             }
-            AMREX_ALWAYS_ASSERT_WITH_MESSAGE(std::isfinite(m_open_reference_radius) &&
+            AMREX_ALWAYS_ASSERT_WITH_MESSAGE(amrex::Math::isfinite(m_open_reference_radius) &&
                 m_open_reference_radius > std::sqrt(radius_squared),
                 "sparse_lu: all-open 2D requires warpx.sparse_lu_open_reference_radius "
                 "larger than the domain half-diagonal; this sets phi=0 at a finite radius "
@@ -556,6 +557,7 @@ struct SparseLUPoissonSolver::Impl
                         face.setBig(d, end);
                         amrex::ParallelFor(face & mfi.validbox(),
                             [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+                                amrex::ignore_unused(j, k); // AMREX_D_DECL drops inactive axes.
                                 amrex::IntVect q(AMREX_D_DECL(i,j,k));
                                 auto inward = q;
                                 inward[d] += side ? -1 : 1;
@@ -795,7 +797,7 @@ struct SparseLUPoissonSolver::Impl
                 PetscInt const row = m_ids[m_domain.index(it())];
                 amrex::Real const value = (row >= 0)
                     ? static_cast<amrex::Real>(PetscRealPart(x[row])) : amrex::Real(0);
-                AMREX_ALWAYS_ASSERT_WITH_MESSAGE(std::isfinite(value),
+                AMREX_ALWAYS_ASSERT_WITH_MESSAGE(amrex::Math::isfinite(value),
                     "sparse_lu: MUMPS returned a non-finite potential");
                 a(it()) = value;
             }

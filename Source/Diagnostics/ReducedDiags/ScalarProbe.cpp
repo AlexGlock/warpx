@@ -10,6 +10,7 @@
 #include "WarpX.H"
 
 #include <AMReX_Gpu.H>
+#include <AMReX_Math.H>
 #include <AMReX_MultiFab.H>
 #include <AMReX_ParallelDescriptor.H>
 #include <AMReX_ParmParse.H>
@@ -89,7 +90,7 @@ ScalarProbe::ScalarProbe (std::string const& rd_name)
         Position normal{0,1,0}, up{0,0,1};
         amrex::Real radius = 0;
         utils::parser::getWithParser(pp, "detector_radius", radius);
-        WARPX_ALWAYS_ASSERT_WITH_MESSAGE(std::isfinite(radius) && radius > 0,
+        WARPX_ALWAYS_ASSERT_WITH_MESSAGE(amrex::Math::isfinite(radius) && radius > 0,
             "ScalarProbe detector_radius must be finite and positive");
 #if defined(WARPX_DIM_3D)
         utils::parser::queryWithParser(pp, "target_normal_x", normal[0]);
@@ -101,7 +102,7 @@ ScalarProbe::ScalarProbe (std::string const& rd_name)
         utils::parser::queryWithParser(pp, "target_up_z", up[2]);
         auto const normalize = [](Position& v) {
             amrex::Real const norm = std::sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
-            WARPX_ALWAYS_ASSERT_WITH_MESSAGE(std::isfinite(norm) && norm > 0,
+            WARPX_ALWAYS_ASSERT_WITH_MESSAGE(amrex::Math::isfinite(norm) && norm > 0,
                 "ScalarProbe plane normal/up vectors must be finite and nonzero");
             for (auto& x : v) { x /= norm; }
         };
@@ -137,7 +138,7 @@ ScalarProbe::ScalarProbe (std::string const& rd_name)
         std::size_t(std::numeric_limits<int>::max()/2), "Too many ScalarProbe samples");
     for (auto const& point : m_positions) {
         for (auto x : point) {
-            WARPX_ALWAYS_ASSERT_WITH_MESSAGE(std::isfinite(x),
+            WARPX_ALWAYS_ASSERT_WITH_MESSAGE(amrex::Math::isfinite(x),
                 "ScalarProbe coordinates must be finite");
         }
     }
@@ -288,8 +289,10 @@ void ScalarProbe::WriteToFile (int step) const
         out << step+1 << m_sep << WarpX::GetInstance().gett_new(0)
             << m_sep << id << m_sep << m_levels[id];
         for (auto coordinate : m_positions[id]) { out << m_sep << coordinate; }
-        auto const missing = std::numeric_limits<amrex::Real>::quiet_NaN();
-        out << m_sep << (m_levels[id] < 0 ? missing : m_data[2*id])
-            << m_sep << (m_levels[id] < 0 ? missing : m_data[2*id+1]) << '\n';
+        if (m_levels[id] < 0) {
+            out << m_sep << "nan" << m_sep << "nan\n";
+        } else {
+            out << m_sep << m_data[2*id] << m_sep << m_data[2*id+1] << '\n';
+        }
     }
 }
