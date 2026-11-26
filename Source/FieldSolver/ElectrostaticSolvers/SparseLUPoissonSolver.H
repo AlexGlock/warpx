@@ -26,7 +26,7 @@ using SparseLUPoissonLinOp = amrex::MLEBNodeFDLaplacian;
 class SparseLUPoissonSolver
 {
 public:
-    enum class BoundaryType { Dirichlet, Periodic, Open };
+    enum class BoundaryType { Dirichlet, Periodic, Open, Neumann };
     using BoundaryArray = amrex::Array<BoundaryType, AMREX_SPACEDIM>;
 
     SparseLUPoissonSolver (

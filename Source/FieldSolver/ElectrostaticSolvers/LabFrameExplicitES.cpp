@@ -171,6 +171,7 @@ void LabFrameExplicitES::ComputePhiSparseLU (
             using BC = SparseLUPoissonSolver::BoundaryType;
             if (bc == FieldBoundaryType::Periodic) { return BC::Periodic; }
             if (bc == FieldBoundaryType::Open) { return BC::Open; }
+            if (bc == FieldBoundaryType::Neumann) { return BC::Neumann; }
             return BC::Dirichlet;
         };
         for (int d = 0; d < AMREX_SPACEDIM; ++d) {

@@ -153,9 +153,12 @@ struct SparseLUPoissonSolver::Impl
 #ifdef WARPX_DIM_3D
         using amrex::Real;
         auto section = m_domain;
-        section.setBig(1, section.smallEnd(1));
+        int const face = m_lo[1] == BoundaryType::Open ? section.smallEnd(1) : section.bigEnd(1);
+        section.setSmall(1, face);
+        section.setBig(1, face);
         auto opposite = [&](amrex::IntVect q) {
-            q[1] = m_domain.bigEnd(1);
+            // With one Robin face, only that face supplies background data.
+            q[1] = m_hi[1] == BoundaryType::Open ? m_domain.bigEnd(1) : face;
             return q;
         };
         auto id = [&](amrex::IntVect q) { return m_ids[m_domain.index(q)]; };
@@ -256,7 +259,7 @@ struct SparseLUPoissonSolver::Impl
                 return eb(pos);
             };
             auto const lo = value(term.low);
-            auto const hi = value(term.high);
+            auto const hi = term.low == term.high ? lo : value(term.high);
             AMREX_ALWAYS_ASSERT_WITH_MESSAGE(std::abs(lo-hi) <=
                 128*std::numeric_limits<amrex::Real>::epsilon()*
                 std::max({amrex::Real(1), std::abs(lo), std::abs(hi)}),
@@ -316,7 +319,9 @@ struct SparseLUPoissonSolver::Impl
                 if (bc == BoundaryType::Periodic) { return amrex::LinOpBCType::Periodic; }
                 // Neumann keeps open nodes active in the AMReX mask. Their
                 // equations are replaced below by explicit radial-decay rows.
-                if (bc == BoundaryType::Open) { return amrex::LinOpBCType::Neumann; }
+                if (bc == BoundaryType::Open || bc == BoundaryType::Neumann) {
+                    return amrex::LinOpBCType::Neumann;
+                }
                 return amrex::LinOpBCType::Dirichlet;
             };
             lobc[d] = convert(lo[d]);
@@ -325,12 +330,17 @@ struct SparseLUPoissonSolver::Impl
         amrex::Real decay_length = 0;
         bool const robin = amrex::ParmParse("warpx").query("decay_length", decay_length);
         m_fixed_robin = robin;
-        if (robin) {
-            AMREX_ALWAYS_ASSERT_WITH_MESSAGE(AMREX_SPACEDIM == 3 &&
-                lo[1] == BoundaryType::Open && hi[1] == BoundaryType::Open &&
-                std::count(lo.begin(), lo.end(), BoundaryType::Open) == 1 &&
-                std::count(hi.begin(), hi.end(), BoundaryType::Open) == 1,
-                "warpx.decay_length requires paired open y faces only in Cartesian 3D");
+        for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+            for (auto bc : {lo[d], hi[d]}) {
+                if (bc == BoundaryType::Neumann || (robin && bc == BoundaryType::Open)) {
+                    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(robin && AMREX_SPACEDIM == 3 && d == 1,
+                        "sparse_lu: Robin/Neumann faces require Cartesian 3D y boundaries");
+                }
+                if (robin && d == 1) {
+                    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(bc == BoundaryType::Open ||
+                        bc == BoundaryType::Neumann, "Robin y face requires open or Neumann opposite");
+                }
+            }
         }
         AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!robin || (std::isfinite(decay_length) &&
             decay_length > 0 && has_open && open_reference_radius == 0),

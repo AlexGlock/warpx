@@ -262,7 +262,8 @@ namespace
     // walls, and linearity across solves that share the cached factorization.
     // An all-open sphere/cylinder also has a known exterior potential.
     amrex::Real test_radial (int n, int wall, bool with_eb,
-                            amrex::Real reference_radius = 0, bool robin = false)
+                            amrex::Real reference_radius = 0, bool robin = false,
+                            int neumann_side = -1)
     {
         using amrex::Real;
         using BC = SparseLUPoissonSolver::BoundaryType;
@@ -274,6 +275,8 @@ namespace
             lo.fill(BC::Dirichlet);
             hi.fill(BC::Dirichlet);
             lo[1] = hi[1] = BC::Open;
+            if (neumann_side == 0) { lo[1] = BC::Neumann; }
+            if (neumann_side == 1) { hi[1] = BC::Neumann; }
         }
         amrex::IntVect const origin = with_eb ? amrex::IntVect(0) :
             amrex::IntVect(AMREX_D_DECL(2,-3,4));
@@ -347,7 +350,8 @@ namespace
                     auto const e = error.array(mfi);
                     amrex::ParallelFor(mfi.validbox(),
                         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-                            if ((j == 0 || j == 2) && i == 1 && k == 1) {
+                            if (((j == 0 && neumann_side != 0) ||
+                                 (j == 2 && neumann_side != 1)) && i == 1 && k == 1) {
                                 Real const ycut = j == 0 ? Real(0.3) : Real(0.7);
                                 e(i,j,k) = p(i,j,k) -
                                     (Real(1.5)/3 + Real(2)/3 * (1 + ycut));
@@ -472,6 +476,8 @@ int main (int argc, char* argv[])
 #if AMREX_SPACEDIM == 3
         amrex::ParmParse("warpx").add("decay_length", amrex::Real(0.6));
         test_radial(2, -1, true, 0, true);
+        test_radial(2, -1, true, 0, true, 0);
+        test_radial(2, -1, true, 0, true, 1);
         amrex::ParmParse("warpx").remove("decay_length");
 #endif
 #endif

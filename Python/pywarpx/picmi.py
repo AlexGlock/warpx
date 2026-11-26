@@ -2466,7 +2466,7 @@ class ElectrostaticSolver(picmistandard.PICMI_ElectrostaticSolver):
         default=None,
         gt=0,
         allow_inf_nan=False,
-        description="Robin decay length in meters relative to the shared charge-free x-z background on matching open y faces in 3D. Requires fixed geometry and fixed domain and embedded-electrode potentials throughout the run.",
+        description="Robin decay length in meters relative to the charge-free x-z background in 3D. The opposite y face may be neumann (zero normal derivative) or a matching open face. Requires fixed geometry and fixed domain and embedded-electrode potentials.",
     )
     sparse_lu_open_reference_radius: float | None = Field(
         default=None,
@@ -2600,13 +2600,15 @@ class ElectrostaticSolver(picmistandard.PICMI_ElectrostaticSolver):
             if self.sparse_lu_open_reference_radius is not None:
                 raise ValueError("Specify either decay_length or sparse_lu_open_reference_radius")
             if not isinstance(self.grid, Cartesian3DGrid) or any(
-                (bc == "open") != (axis == 1)
+                (bc in ("open", "neumann")) != (axis == 1)
                 for boundaries in (
                     self.grid.lower_boundary_conditions, self.grid.upper_boundary_conditions
                 )
                 for axis, bc in enumerate(boundaries)
+            ) or "open" not in (
+                self.grid.lower_boundary_conditions[1], self.grid.upper_boundary_conditions[1]
             ):
-                raise ValueError("decay_length requires paired open y faces only in 3D")
+                raise ValueError("decay_length requires a 3D open y face opposite open or neumann")
         if self.method != "sparse_lu":
             if self.sparse_lu_open_reference_radius is not None:
                 raise ValueError(
@@ -2623,6 +2625,7 @@ class ElectrostaticSolver(picmistandard.PICMI_ElectrostaticSolver):
             raise ValueError("sparse_lu requires the labframe electrostatic solver")
         if any(
             bc not in ("dirichlet", "periodic", "open")
+            and not (bc == "neumann" and self.decay_length is not None)
             for bc in (
                 *self.grid.lower_boundary_conditions,
                 *self.grid.upper_boundary_conditions,
