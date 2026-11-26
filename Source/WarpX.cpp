@@ -809,12 +809,12 @@ WarpX::ReadParameters ()
                 "sparse_lu requires warpx.do_electrostatic = labframe");
             for (int d = 0; d < AMREX_SPACEDIM; ++d) {
                 auto const supported = [](FieldBoundaryType bc) {
-                    return bc == FieldBoundaryType::PEC ||
+                    return bc == FieldBoundaryType::PEC || bc == FieldBoundaryType::Neumann ||
                            bc == FieldBoundaryType::Periodic || bc == FieldBoundaryType::Open;
                 };
                 WARPX_ALWAYS_ASSERT_WITH_MESSAGE(
                     supported(field_boundary_lo[d]) && supported(field_boundary_hi[d]),
-                    "sparse_lu supports PEC, periodic or open (radial decay) boundaries");
+                    "sparse_lu supports PEC, periodic, open, or Neumann opposite a Robin y face");
                 WARPX_ALWAYS_ASSERT_WITH_MESSAGE(
                     (field_boundary_lo[d] == FieldBoundaryType::Periodic) ==
                     (field_boundary_hi[d] == FieldBoundaryType::Periodic),
